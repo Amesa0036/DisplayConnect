@@ -16,6 +16,9 @@ import com.example.displayconnect.utils.StatsTracker
 import com.example.displayconnect.utils.TransmissionHub
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import com.example.displayconnect.routing.ReroutePolicy
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +53,9 @@ class NavigationEngine(
     private var destination: LatLon? = null
     private var locationJob: Job? = null
     private var downloadJob: Job? = null
+    private var rerouteJob: Deferred<Result<RouteData>>? = null
+    private val reroutePolicy = ReroutePolicy()
+    private var rerouteFailed = false
     private var activeSettings: AppSettings? = null
     private var gpsFilter: GpsFilter? = null
     private var gpsWatchdog: Job? = null
@@ -138,6 +144,10 @@ class NavigationEngine(
     }
 
     fun stopNavigation() {
+        rerouteJob?.cancel()
+        rerouteJob = null
+        reroutePolicy.reset()
+        rerouteFailed = false
         locationJob?.cancel()
         locationJob = null
         downloadJob?.cancel()
@@ -173,10 +183,79 @@ class NavigationEngine(
     }
 
     private suspend fun publishUpdate(raw: LocationUpdate, settings: AppSettings) = withContext(Dispatchers.Default) {
+        currentCoroutineContext().ensureActive()
         val buildStarted = SystemClock.elapsedRealtime()
-        val currentRoute = route ?: return@withContext
-        val progress = progressCalculator?.update(LatLon(raw.lat, raw.lon))
+        var currentRoute = route ?: return@withContext
+        val rawPosition = LatLon(raw.lat, raw.lon)
+        var progress = progressCalculator?.update(rawPosition)
             ?: com.example.displayconnect.routing.TripProgress()
+        val nowMs = SystemClock.elapsedRealtime()
+        val fresh = nowMs - raw.elapsedMs in 0..3000
+        val away = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
+        // A completed network request never writes shared route state itself.
+        // Install only here, serially with GPS frames and only if still off the old route.
+        val pending = rerouteJob
+        if (pending != null && pending.isCompleted) {
+            val result = pending.await()
+            currentCoroutineContext().ensureActive()
+            rerouteJob = null
+            reroutePolicy.requestFinished(nowMs)
+            val replacement = result.getOrNull()
+            val calculator = replacement?.takeIf { it.coordinates.size >= 2 }?.let { RouteProgressCalculator(it) }
+            val candidateProgress = calculator?.update(rawPosition)
+            val applicable = away && candidateProgress?.distanceFromRouteM?.let {
+                it <= maxOf(30.0, raw.accuracyM.toDouble() * 2)
+            } == true
+            if (replacement != null && calculator != null && applicable) {
+                currentCoroutineContext().ensureActive()
+                route = replacement
+                progressCalculator = calculator
+                currentRoute = replacement
+                progress = candidateProgress!!
+                reroutePolicy.clearEvidence()
+                rerouteFailed = false
+                downloadJob?.cancel()
+                downloadJob = null
+                retryOfflineDownload()
+                // Cache persistence is secondary: failure must not stop live navigation.
+                destination?.let { dest ->
+                    try { offlineMap.saveRoute(replacement, dest, settings.routeProfile) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { Log.w("DisplayConnectRoute", "New route cache failed", e) }
+                }
+                Log.i("DisplayConnectRoute", "Automatic reroute installed")
+            } else if (away) {
+                rerouteFailed = true
+                Log.w("DisplayConnectRoute", "Reroute failed or no longer near current position")
+            }
+        }
+        val confirmed = reroutePolicy.observe(progress.distanceFromRouteM, raw.accuracyM,
+            raw.elapsedMs, nowMs)
+        if (rerouteJob == null && confirmed) {
+            destination?.let { dest ->
+                reroutePolicy.requestStarted(nowMs)
+                rerouteFailed = false
+                // Child of the whole navigation, not of this frame: BLE continues while waiting.
+                // Cancellation cannot install a response into a later trip.
+                currentCoroutineContext().ensureActive()
+                val navigationParent = locationJob ?: return@withContext
+                rerouteJob = scope.async(Dispatchers.IO + navigationParent) {
+                    routeProvider.fetchRoute(rawPosition, dest, settings.routeProfile)
+                }
+                Log.i("DisplayConnectRoute", "Automatic reroute requested")
+            }
+        }
+        val deviated = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
+        if (deviated) progress = progress.copy(offRoute = true,
+            remainingDistanceM = null, remainingDurationS = null)
+        val rerouteInstruction = if (deviated) when (AppLanguage.language.value) {
+            "es" -> if (rerouteJob != null) "Recalculando ruta..." else if (rerouteFailed)
+                "Sin ruta nueva - comprobar internet" else "Fuera de ruta"
+            "en" -> if (rerouteJob != null) "Recalculating route..." else if (rerouteFailed)
+                "No new route - check internet" else "Off route"
+            else -> if (rerouteJob != null) "Recalculando rota..." else if (rerouteFailed)
+                "Sem nova rota - confira internet" else "Fora da rota"
+        } else null
         val position = GpsFilter.displayPosition(LatLon(raw.lat, raw.lon), progress.matchedPosition,
             progress.distanceFromRouteM, raw.accuracyM, raw.speedMps, raw.bearing, progress.routeBearing)
         val update = raw.copy(lat = position.lat, lon = position.lon)
@@ -225,7 +304,7 @@ class NavigationEngine(
             lat = update.lat,
             lon = update.lon,
             bearing = bearing,
-            instruction = NavigationText.maneuver(step, AppLanguage.language.value),
+            instruction = rerouteInstruction ?: NavigationText.maneuver(step, AppLanguage.language.value),
             language = AppLanguage.language.value,
             distanceM = distanceM,
             remainingDistanceM = progress.remainingDistanceM,
