@@ -180,10 +180,10 @@ class NavigationEngine(
             return@withContext
         }
 
-        val step = findCurrentStep(update, currentRoute.steps)
-        val distanceM = step?.let {
-            haversineMeters(update.lat, update.lon, it.endLocation.lat, it.endLocation.lon).toInt()
-        } ?: 0
+        val next = com.example.displayconnect.routing.ManeuverSelector.next(
+            currentRoute, progress.remainingDistanceM, progress.offRoute)
+        val step = next?.step
+        val distanceM = next?.distanceM ?: 0
         val simplified = MapProjector.simplifyRoute(
             currentRoute.coordinates.map { it.lat to it.lon }
         )
@@ -230,7 +230,11 @@ class NavigationEngine(
             routeScreenPoints = screenRoute,
             streetSegments = streetSegments,
             userScreenPoint = userPoint,
-            html = MapsHtmlHolder.get()
+            html = MapsHtmlHolder.get(),
+            maneuver = step?.let { com.example.displayconnect.routing.ManeuverSelector.code(it) } ?: "unknown",
+            maneuverType = step?.maneuverType ?: "",
+            maneuverModifier = step?.maneuverModifier ?: "",
+            maneuverExit = step?.maneuverExit
         )
 
         val json = message.toJson()
@@ -247,20 +251,6 @@ class NavigationEngine(
                 statsTracker.currentStats(settings.resolutionLabel)
             )
         }
-    }
-
-    private fun findCurrentStep(update: LocationUpdate, steps: List<RouteStep>): RouteStep? {
-        if (steps.isEmpty()) return null
-        var closest = steps.first()
-        var minDist = Double.MAX_VALUE
-        for (step in steps) {
-            val d = haversineMeters(update.lat, update.lon, step.endLocation.lat, step.endLocation.lon)
-            if (d < minDist) {
-                minDist = d
-                closest = step
-            }
-        }
-        return closest
     }
 
     private fun computeBearingFromRoute(
