@@ -55,6 +55,7 @@ fun SettingsScreen(
                 FilterChip(selected = language == "pt-BR", onClick = { viewModel.selectLanguage("pt-BR") }, label = { Text("Português (Brasil)") })
                 FilterChip(selected = language == "en", onClick = { viewModel.selectLanguage("en") }, label = { Text("English") })
             }
+            FilterChip(selected = language == "es", onClick = { viewModel.selectLanguage("es") }, label = { Text("Español") })
 
             SettingSlider(
                 title = stringResource(R.string.setting_nav_hz, settings.navUpdateHz),
