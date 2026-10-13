@@ -47,7 +47,7 @@ class OfflineDiskStore(private val root: File) {
     }
 
     @Synchronized fun saveRoute(route: RouteData, destination: LatLon, profile: RouteProfile) {
-        write(File(root, "last-route.gz")) { output ->
+        write(File(root, "last-route-maneuvers-v2.gz")) { output ->
             output.point(destination); output.writeUTF(profile.storageKey)
             output.points(route.coordinates)
             output.writeDouble(route.distanceM); output.writeDouble(route.durationS)
@@ -55,18 +55,23 @@ class OfflineDiskStore(private val root: File) {
             for (step in route.steps) {
                 output.writeUTF(step.instruction); output.writeUTF(step.street)
                 output.writeInt(step.distanceM); output.point(step.endLocation)
+                output.writeUTF(step.maneuverType); output.writeUTF(step.maneuverModifier)
+                output.writeInt(step.maneuverExit ?: 0)
+                output.writeDouble(step.maneuverAtM ?: -1.0)
             }
             output.doubles(route.segmentDistancesM); output.doubles(route.segmentDurationsS)
         }
     }
 
     @Synchronized fun findRoute(origin: LatLon, destination: LatLon, profile: RouteProfile): RouteData? {
-        val saved = read(File(root, "last-route.gz")) { input ->
+        val saved = read(File(root, "last-route-maneuvers-v2.gz")) { input ->
             val dest = input.point(); val storedProfile = input.readUTF()
             val coordinates = input.points()
             val distance = input.readDouble(); val duration = input.readDouble()
             val steps = List(input.count(100000)) {
-                RouteStep(input.readUTF(), input.readUTF(), input.readInt(), input.point())
+                RouteStep(input.readUTF(), input.readUTF(), input.readInt(), input.point(),
+                    input.readUTF(), input.readUTF(), input.readInt().takeIf { it > 0 },
+                    input.readDouble().takeIf { it >= 0 && it.isFinite() })
             }
             Triple(dest, storedProfile, RouteData(coordinates, steps, distance, duration, input.doubles(), input.doubles()))
         } ?: return null
