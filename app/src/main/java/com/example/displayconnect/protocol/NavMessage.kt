@@ -21,7 +21,12 @@ data class NavMessage(
     val remainingDurationS: Int? = null,
     val offRoute: Boolean = false,
     val language: String = "pt-BR",
-    val gpsWeak: Boolean = false
+    val gpsWeak: Boolean = false,
+    val maneuver: String = "",
+    val maneuverType: String = "",
+    val maneuverModifier: String = "",
+    val maneuverExit: Int? = null
+
 ) {
     fun toJson(): String {
         val route = JSONArray()
@@ -34,6 +39,10 @@ data class NavMessage(
             .put("lon", lon)
             .put("bearing", bearing.toDouble())
             .put("instruction", java.text.Normalizer.normalize(instruction, java.text.Normalizer.Form.NFC).take(63))
+            .put("maneuver", maneuver)
+            .put("maneuver_type", maneuverType)
+            .put("maneuver_modifier", maneuverModifier)
+            .put("maneuver_exit", maneuverExit ?: JSONObject.NULL)
             .put("distance_m", distanceM)
             .put("remaining_m", remainingDistanceM ?: -1)
             .put("remaining_s", remainingDurationS ?: -1)
