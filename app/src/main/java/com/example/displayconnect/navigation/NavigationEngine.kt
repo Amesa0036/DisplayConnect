@@ -105,17 +105,22 @@ class NavigationEngine(
                 downloadJob?.cancel()
                 gpsWatchdog?.cancel()
                 TransmissionHub.setNavigating(false)
-                TransmissionHub.navigationFailed(if (AppLanguage.language.value == "en")
-                    "No GPS fix. Move to an open area and try again." else "GPS sem posição. Vá para um local aberto e tente novamente.")
+                TransmissionHub.navigationFailed(when (AppLanguage.language.value) {
+                    "en" -> "No GPS fix. Move to an open area and try again."
+                    "es" -> "Sin posición GPS. Ve a una zona abierta y vuelve a intentarlo."
+                    else -> "GPS sem posição. Vá para um local aberto e tente novamente."
+                })
                 onNavigationEnded()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 downloadJob?.cancel()
                 gpsWatchdog?.cancel()
                 TransmissionHub.setNavigating(false)
-                TransmissionHub.navigationFailed(if (AppLanguage.language.value == "en")
-                    "Unable to start navigation. Check precise location, internet and the destination." else
-                    e.message ?: "Não foi possível iniciar a navegação.")
+                TransmissionHub.navigationFailed(when (AppLanguage.language.value) {
+                    "en" -> "Unable to start navigation. Check precise location, internet and the destination."
+                    "es" -> "No se puede iniciar la navegación. Comprueba la ubicación precisa, internet y el destino."
+                    else -> e.message ?: "Não foi possível iniciar a navegação."
+                })
                 onNavigationEnded()
             }
         }
@@ -220,7 +225,7 @@ class NavigationEngine(
             lat = update.lat,
             lon = update.lon,
             bearing = bearing,
-            instruction = NavigationText.instruction(step?.instruction ?: "Continue", AppLanguage.language.value),
+            instruction = NavigationText.maneuver(step, AppLanguage.language.value),
             language = AppLanguage.language.value,
             distanceM = distanceM,
             remainingDistanceM = progress.remainingDistanceM,
