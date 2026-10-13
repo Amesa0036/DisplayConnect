@@ -20,6 +20,8 @@ jobs:
           java-version: '21'
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: ''
       - name: Install Android 36.1 platform
         run: sdkmanager 'platforms;android-36.1' 'platform-tools'
       - name: Build debug APK
