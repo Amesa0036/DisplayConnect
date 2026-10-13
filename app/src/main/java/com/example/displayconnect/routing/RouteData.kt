@@ -6,7 +6,11 @@ data class RouteStep(
     val instruction: String,
     val street: String,
     val distanceM: Int,
-    val endLocation: LatLon
+    val endLocation: LatLon,
+    val maneuverType: String = "",
+    val maneuverModifier: String = "",
+    val maneuverExit: Int? = null,
+    val maneuverAtM: Double? = null
 )
 
 data class RouteData(
