@@ -47,9 +47,9 @@ class RouteProgressCalculator(private val route: RouteData) {
         val all = 0 until points.lastIndex
         val previous = lastSegment
         var found = match(if (previous == null) all else max(0, previous - 3)..min(points.lastIndex - 1, previous + 40))
-        if (found.distance > 80 && previous != null) found = match(all)
+        if (found.distance > 30 && previous != null) found = match(all)
         // Do not present a made-up ETA when GPS is far from this route.
-        if (found.distance > 80) return TripProgress(offRoute = true)
+        if (found.distance > 80) return TripProgress(offRoute = true, distanceFromRouteM = found.distance)
         lastSegment = found.index
         val i = found.index
         val remainingM = distanceSuffix[i + 1] + distances[i] * (1 - found.fraction)
