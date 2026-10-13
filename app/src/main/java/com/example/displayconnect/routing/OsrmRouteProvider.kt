@@ -60,6 +60,7 @@ class OsrmRouteProvider(
         val steps = mutableListOf<RouteStep>()
         val segmentDistances = mutableListOf<Double>()
         val segmentDurations = mutableListOf<Double>()
+        var traveledM = 0.0
         val legs = route.getJSONArray("legs")
         for (l in 0 until legs.length()) {
             val annotation = legs.getJSONObject(l).optJSONObject("annotation")
@@ -85,9 +86,15 @@ class OsrmRouteProvider(
                         endLocation = LatLon(
                             lat = location.getDouble(1),
                             lon = location.getDouble(0)
-                        )
+                        ),
+                        maneuverType = type,
+                        maneuverModifier = modifier,
+                        maneuverExit = maneuver.optInt("exit", 0).takeIf { it > 0 },
+                        maneuverAtM = traveledM
+
                     )
                 )
+                traveledM += step.optDouble("distance", 0.0).coerceAtLeast(0.0)
             }
         }
 
