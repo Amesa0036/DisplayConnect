@@ -3,14 +3,19 @@ package com.example.displayconnect.routing
 object NavigationText {
     fun maneuver(step: RouteStep?, language: String): String {
         if (step == null) return instruction("Continue",language)
-        // Roundabouts/U-turns have priority over their approach modifier.
-        val canonical = when {
-            step.maneuverType == "arrive" -> "Arrive at destination"
-            step.maneuverType == "depart" -> "Start route"
-            step.maneuverModifier == "uturn" -> "U-turn"
-            step.maneuverType in listOf("roundabout","rotary") -> "Roundabout"
-            step.maneuverType in listOf("exit roundabout","exit rotary") -> "Exit roundabout"
-            else -> step.instruction
+        // Text and icon share one canonical decision, never independent mappings.
+        val canonical = when (ManeuverSelector.code(step)) {
+            "arrive" -> "Arrive at destination"
+            "uturn" -> "U-turn"
+            "roundabout" -> "Roundabout"
+            "left" -> "Turn left"
+            "right" -> "Turn right"
+            "slight_left" -> "Slight left"
+            "slight_right" -> "Slight right"
+            "sharp_left" -> "Sharp left"
+            "sharp_right" -> "Sharp right"
+            "straight" -> if (step.maneuverType == "depart") "Start route" else "Continue straight"
+            else -> if (step.maneuverType in listOf("exit roundabout", "exit rotary")) "Exit roundabout" else "Follow route"
         }
         val translated=instruction(canonical,language)
         return if (language == "es" && step.maneuverType in listOf("roundabout","rotary") && (step.maneuverExit ?: 0)>0)
