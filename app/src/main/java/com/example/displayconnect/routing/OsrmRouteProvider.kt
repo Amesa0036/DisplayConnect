@@ -18,7 +18,8 @@ class OsrmRouteProvider(
     suspend fun fetchRoute(
         origin: LatLon,
         destination: LatLon,
-        profile: RouteProfile = RouteProfile.CAR
+        profile: RouteProfile = RouteProfile.CAR,
+        departureBearing: Float? = null
     ): Result<RouteData> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -28,6 +29,7 @@ class OsrmRouteProvider(
                     append(';')
                     append(destination.lon).append(',').append(destination.lat)
                     append("?overview=full&geometries=geojson&steps=true&annotations=distance,duration")
+                    ForwardReroute.bearingOption(departureBearing)?.let { append(it) }
                 }
                 val request = Request.Builder().url(url)
                     .header("User-Agent", "DisplayConnect-CYD/2.1 (personal navigation)").get().build()
@@ -37,7 +39,10 @@ class OsrmRouteProvider(
                     }
                     response.body?.string() ?: error("Empty OSRM response")
                 }
-                parseResponse(body)
+                parseResponse(body).also { route ->
+                    if (!ForwardReroute.accepts(route.coordinates, departureBearing))
+                        error("No forward departure found; refusing immediate reversal")
+                }
             }.onFailure { if (it is CancellationException) throw it }
         }
 
