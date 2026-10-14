@@ -25,7 +25,10 @@ data class NavMessage(
     val maneuver: String = "",
     val maneuverType: String = "",
     val maneuverModifier: String = "",
-    val maneuverExit: Int? = null
+    val maneuverExit: Int? = null,
+    val speedKmh: Int? = null,
+    val speedLimitKmh: Int? = null,
+    val speedLimitState: String = "unknown"
 
 ) {
     fun toJson(): String {
@@ -49,6 +52,9 @@ data class NavMessage(
             .put("off_route", offRoute)
             .put("lang", language)
             .put("gps_weak", gpsWeak)
+            .put("speed_kmh", speedKmh ?: -1)
+            .put("speed_limit_kmh", speedLimitKmh ?: -1)
+            .put("speed_limit_state", speedLimitState)
             .put("street", java.text.Normalizer.normalize(street, java.text.Normalizer.Form.NFC).take(47))
             .put("route", route)
         if (streetSegments.isNotEmpty()) {
