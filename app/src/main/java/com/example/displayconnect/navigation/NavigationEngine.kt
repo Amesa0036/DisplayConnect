@@ -242,7 +242,9 @@ class NavigationEngine(
                 currentCoroutineContext().ensureActive()
                 val navigationParent = locationJob ?: return@withContext
                 rerouteJob = scope.async(Dispatchers.IO + navigationParent) {
-                    routeProvider.fetchRoute(rawPosition, dest, settings.routeProfile)
+                    routeProvider.fetchRoute(rawPosition, dest, settings.routeProfile,
+                        com.example.displayconnect.routing.ForwardReroute.reliableBearing(
+                            raw.bearing, raw.speedMps, raw.accuracyM))
                 }
                 Log.i("DisplayConnectRoute", "Automatic reroute requested")
             }
@@ -252,11 +254,11 @@ class NavigationEngine(
             remainingDistanceM = null, remainingDurationS = null)
         val rerouteInstruction = if (deviated) when (AppLanguage.language.value) {
             "es" -> if (rerouteJob != null) "Recalculando ruta..." else if (rerouteFailed)
-                "Sin ruta nueva - comprobar internet" else "Fuera de ruta"
+                "Sin ruta nueva - revisa la app" else "Fuera de ruta"
             "en" -> if (rerouteJob != null) "Recalculating route..." else if (rerouteFailed)
-                "No new route - check internet" else "Off route"
+                "No new route - check the app" else "Off route"
             else -> if (rerouteJob != null) "Recalculando rota..." else if (rerouteFailed)
-                "Sem nova rota - confira internet" else "Fora da rota"
+                "Sem nova rota - confira o app" else "Fora da rota"
         } else null
         val position = GpsFilter.displayPosition(LatLon(raw.lat, raw.lon), progress.matchedPosition,
             progress.distanceFromRouteM, raw.accuracyM, raw.speedMps, raw.bearing, progress.routeBearing)
