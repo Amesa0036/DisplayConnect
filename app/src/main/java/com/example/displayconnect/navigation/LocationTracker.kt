@@ -42,7 +42,7 @@ class LocationTracker(context: Context) {
                         lat = location.latitude,
                         lon = location.longitude,
                         bearing = if (location.hasBearing()) location.bearing else Float.NaN,
-                        speedMps = if (location.hasSpeed()) location.speed else 0f,
+                        speedMps = if (location.hasSpeed()) location.speed else Float.NaN,
                         accuracyM = if (location.hasAccuracy()) location.accuracy else Float.POSITIVE_INFINITY,
                         elapsedMs = location.elapsedRealtimeNanos / 1_000_000
                     )
