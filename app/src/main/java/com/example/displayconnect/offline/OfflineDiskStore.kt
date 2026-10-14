@@ -11,11 +11,16 @@ class OfflineDiskStore(private val root: File) {
     init { check(root.isDirectory || root.mkdirs()) { "Não foi possível criar o mapa offline" } }
 
     @Synchronized fun load(tile: StreetTile): List<StreetWay>? {
+        val file = File(root, "speed-v1-" + tile.key + ".gz")
+        // Refresh this source snapshot weekly. Age is not a guarantee of OSM correctness.
+        if (System.currentTimeMillis() - file.lastModified() !in 0..MAX_TILE_AGE_MS) return null
         memory[tile]?.let { return it }
-        val result = read(File(root, tile.key + ".gz")) { input ->
+        val result = read(file) { input ->
             List(input.count(50000)) {
                 val id = input.readLong()
-                StreetWay(id, input.points())
+                val points = input.points()
+                val tags = buildMap { repeat(input.count(100)) { put(input.readUTF(), input.readUTF()) } }
+                StreetWay(id, points, tags)
             }
         } ?: return null
         remember(tile, result)
@@ -23,12 +28,18 @@ class OfflineDiskStore(private val root: File) {
     }
 
     @Synchronized fun save(tile: StreetTile, ways: List<StreetWay>) {
-        write(File(root, tile.key + ".gz")) { output ->
+        write(File(root, "speed-v1-" + tile.key + ".gz")) { output ->
             output.writeInt(ways.size)
-            for (way in ways) { output.writeLong(way.id); output.points(way.points) }
+            for (way in ways) {
+                output.writeLong(way.id); output.points(way.points)
+                output.writeInt(way.tags.size)
+                way.tags.forEach { (key, value) -> output.writeUTF(key); output.writeUTF(value) }
+            }
         }
         remember(tile, ways)
     }
+
+    private companion object { const val MAX_TILE_AGE_MS = 7L * 24 * 60 * 60 * 1000 }
 
     private fun remember(tile: StreetTile, ways: List<StreetWay>) {
         memory[tile] = ways
@@ -36,9 +47,9 @@ class OfflineDiskStore(private val root: File) {
     }
 
     @Synchronized fun trim(protectedTiles: Set<StreetTile>) {
-        val files = root.listFiles()?.filter { it.name.startsWith("14_") && it.extension == "gz" }.orEmpty()
+        val files = root.listFiles()?.filter { (it.name.startsWith("14_") || it.name.startsWith("speed-v1-14_")) && it.extension == "gz" }.orEmpty()
         var bytes = files.sumOf { it.length() }
-        val protectedNames = protectedTiles.map { it.key + ".gz" }.toSet()
+        val protectedNames = protectedTiles.flatMap { listOf(it.key + ".gz", "speed-v1-" + it.key + ".gz") }.toSet()
         for (file in files.sortedBy { it.lastModified() }) {
             if (bytes <= 256L * 1024 * 1024) break
             val size = file.length()
