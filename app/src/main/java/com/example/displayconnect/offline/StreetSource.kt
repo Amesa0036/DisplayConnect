@@ -2,7 +2,7 @@ package com.example.displayconnect.offline
 
 import com.example.displayconnect.routing.LatLon
 
-data class StreetWay(val id: Long, val points: List<LatLon>) {
+data class StreetWay(val id: Long, val points: List<LatLon>, val tags: Map<String, String> = emptyMap()) {
     val bounds: GeoBounds = GeoBounds(points.minOf { it.lat }, points.minOf { it.lon },
         points.maxOf { it.lat }, points.maxOf { it.lon })
 }

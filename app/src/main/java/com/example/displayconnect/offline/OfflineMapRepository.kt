@@ -45,6 +45,10 @@ class OfflineMapRepository(root: File, private val source: StreetSource, private
 
     /** No network here. Only read saved tiles needed to cover this complete viewport. */
     suspend fun visibleWays(center: LatLon, scale: Double): Pair<List<List<LatLon>>, Boolean> =
+        streetWays(center, scale).let { (ways, complete) -> ways.map { it.points } to complete }
+
+    /** Tags and geometry from the same complete cached viewport, no per-fix network call. */
+    suspend fun streetWays(center: LatLon, scale: Double): Pair<List<StreetWay>, Boolean> =
         withContext(Dispatchers.IO) {
             val tiles = RouteCoverage.tiles(RouteCoverage.around(center, RouteCoverage.radiusMeters(scale)))
             val ways = linkedMapOf<Long, StreetWay>()
@@ -54,6 +58,6 @@ class OfflineMapRepository(root: File, private val source: StreetSource, private
                 val cached = disk.load(tile)
                 if (cached == null) complete = false else cached.forEach { ways[it.id] = it }
             }
-            ways.values.map { it.points } to complete
+            ways.values.toList() to complete
         }
 }
