@@ -1,4 +1,4 @@
-name: Build DisplayConnect APK (fixed debug signature)
+name: Build DisplayConnect APK (verified fixed signature)
 
 on:
   workflow_dispatch:
@@ -10,6 +10,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      EXPECTED_CERT_SHA256: 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,21 +22,28 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Restore fixed debug signing key
+      - name: Restore and verify private signing key
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
         shell: bash
         run: |
           set -euo pipefail
           if [ -z "${DEBUG_KEYSTORE_BASE64:-}" ]; then
-            echo 'Missing DEBUG_KEYSTORE_BASE64 secret. Build stopped; no new signing key will be generated.' >&2
+            echo 'Missing DEBUG_KEYSTORE_BASE64. Build stopped.' >&2
             exit 1
           fi
           umask 077
-          mkdir -p "$HOME/.android"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$HOME/.android/debug.keystore"
-          test -s "$HOME/.android/debug.keystore"
-          keytool -list -keystore "$HOME/.android/debug.keystore" -storepass android -alias androiddebugkey > /dev/null
+          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
+          mkdir -p "$(dirname "$KEY")"
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
+          test -s "$KEY"
+          keytool -exportcert -keystore "$KEY" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/displayconnect-cert.der"
+          ACTUAL=$(sha256sum "$RUNNER_TEMP/displayconnect-cert.der" | cut -d ' ' -f 1)
+          echo "Restored public certificate SHA256: $ACTUAL"
+          if [ "$ACTUAL" != "$EXPECTED_CERT_SHA256" ]; then
+            echo 'Secret certificate does not match the expected local certificate. No APK will be uploaded.' >&2
+            exit 1
+          fi
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -47,9 +56,14 @@ jobs:
       - name: Build debug APK
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon :app:assembleDebug
+          echo "HOME=$HOME"
+          echo "ANDROID_USER_HOME=${ANDROID_USER_HOME:-unset}"
+          echo "ANDROID_PREFS_ROOT=${ANDROID_PREFS_ROOT:-unset}"
+          echo "ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
+          echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
+          ./gradlew --no-daemon :app:signingReport :app:assembleDebug
 
-      - name: Verify APK signature and record public certificate
+      - name: Sign final APK explicitly and enforce certificate match
         shell: bash
         run: |
           set -euo pipefail
@@ -57,7 +71,22 @@ jobs:
           test -n "$SDK"
           APKSIGNER=$(find "$SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)
           test -n "$APKSIGNER"
-          "$APKSIGNER" verify --verbose --print-certs app/build/outputs/apk/debug/app-debug.apk
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
+          # Replace Gradle's debug signature with the exact restored private key.
+          "$APKSIGNER" sign --ks "$KEY" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$RUNNER_TEMP/displayconnect-fixed.apk" "$APK"
+          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/displayconnect-fixed.apk" | tee "$RUNNER_TEMP/displayconnect-signer.txt"
+          python3 - <<'PYVERIFY'
+          import os, re
+          from pathlib import Path
+          text = Path(os.environ['RUNNER_TEMP'], 'displayconnect-signer.txt').read_text()
+          hashes = re.findall(r'^.*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$', text, re.M)
+          expected = os.environ['EXPECTED_CERT_SHA256'].lower()
+          if len(hashes) != 1 or hashes[0].lower() != expected:
+              raise SystemExit('Final APK signer mismatch. Upload blocked.')
+          print('Final APK signature matches the fixed local certificate.')
+          PYVERIFY
+          mv "$RUNNER_TEMP/displayconnect-fixed.apk" "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -70,4 +99,6 @@ jobs:
       - name: Remove signing key from runner
         if: always()
         shell: bash
-        run: rm -f "$HOME/.android/debug.keystore"
+        run: |
+          rm -rf "$RUNNER_TEMP/displayconnect-signing"
+          rm -f "$RUNNER_TEMP/displayconnect-cert.der" "$RUNNER_TEMP/displayconnect-signer.txt" "$RUNNER_TEMP/displayconnect-fixed.apk"
