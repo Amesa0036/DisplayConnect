@@ -51,7 +51,13 @@ class OverpassStreetProvider(
                             require(it.lat in -90.0..90.0 && it.lon in -180.0..180.0)
                         }
                     }
-                    add(StreetWay(element.getLong("id"), points))
+                    val sourceTags = element.optJSONObject("tags")
+                    val tags = mutableMapOf<String, String>()
+                    sourceTags?.keys()?.forEach { key ->
+                        if (key.startsWith("maxspeed") || key.contains(":conditional") || key in setOf("highway", "oneway", "junction", "access", "motor_vehicle", "motorcycle"))
+                            tags[key] = sourceTags.optString(key).take(512)
+                    }
+                    add(StreetWay(element.getLong("id"), points, tags))
                 }
             }
             ways
