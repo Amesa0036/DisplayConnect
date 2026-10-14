@@ -62,6 +62,7 @@ class NavigationEngine(
     private var lastAcceptedMs = 0L
     @Volatile private var lastMessage: NavMessage? = null
     private val statsTracker = StatsTracker()
+    private val speedLimitMatcher = com.example.displayconnect.routing.SpeedLimitMatcher()
 
     fun startNavigation(destLat: Double, destLon: Double) {
         stopNavigation()
@@ -163,6 +164,7 @@ class NavigationEngine(
         activeSettings = null
         TransmissionHub.setNavigating(false)
         statsTracker.reset()
+        speedLimitMatcher.reset()
     }
 
     private fun acceptUpdate(update: LocationUpdate): Boolean {
@@ -179,7 +181,7 @@ class NavigationEngine(
     private fun sendWeakGpsFrame() {
         val previous = lastMessage ?: return
         if (previous.gpsWeak) return
-        previous.copy(gpsWeak = true).also { lastMessage = it; navClient.sendNavMessage(it.toJson()) }
+        previous.copy(gpsWeak = true, speedKmh = null, speedLimitKmh = null, speedLimitState = "gps_weak").also { lastMessage = it; navClient.sendNavMessage(it.toJson()) }
     }
 
     private suspend fun publishUpdate(raw: LocationUpdate, settings: AppSettings) = withContext(Dispatchers.Default) {
@@ -285,7 +287,14 @@ class NavigationEngine(
             scaleMeters = settings.mapScaleMeters
         )
 
-        val (streets, covered) = offlineMap.visibleWays(LatLon(update.lat, update.lon), settings.mapScaleMeters)
+        val (streetWays, covered) = offlineMap.streetWays(LatLon(update.lat, update.lon), settings.mapScaleMeters)
+        val streets = streetWays.map { it.points }
+        val speedKmh = raw.speedMps.takeIf { fresh && raw.accuracyM <= 25f && it.isFinite() && it in 0f..100f }
+            ?.let { kotlin.math.round(it * 3.6f).toInt() }
+        val limit = speedLimitMatcher.update(rawPosition, raw.accuracyM, raw.speedMps, raw.bearing,
+            raw.elapsedMs, streetWays, covered && fresh && !progress.offRoute &&
+                settings.routeProfile in listOf(com.example.displayconnect.routing.RouteProfile.CAR,
+                    com.example.displayconnect.routing.RouteProfile.MOTORCYCLE), settings.routeProfile)
         TransmissionHub.updateMapCoverage(covered)
         val streetSegments = withContext(Dispatchers.Default) { StreetContextProjector.projectSegments(
             centerLat = update.lat,
@@ -318,7 +327,10 @@ class NavigationEngine(
             maneuver = step?.let { com.example.displayconnect.routing.ManeuverSelector.code(it) } ?: "unknown",
             maneuverType = step?.maneuverType ?: "",
             maneuverModifier = step?.maneuverModifier ?: "",
-            maneuverExit = step?.maneuverExit
+            maneuverExit = step?.maneuverExit,
+            speedKmh = speedKmh,
+            speedLimitKmh = limit.kmh,
+            speedLimitState = limit.state
         )
 
         val json = message.toJson()
