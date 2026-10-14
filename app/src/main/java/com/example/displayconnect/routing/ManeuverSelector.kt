@@ -24,8 +24,8 @@ object ManeuverSelector {
         val type = step.maneuverType
         val modifier = step.maneuverModifier
         if (type == "arrive") return "arrive"
-        if (modifier == "uturn") return "uturn"
-        if (type == "roundabout" || type == "rotary") return "roundabout"
+        if (modifier == "uturn" || type == "uturn") return "uturn"
+        if (type == "roundabout" || type == "rotary" || type == "roundabout turn") return "roundabout"
         return when (modifier) {
             "left" -> "left"
             "right" -> "right"
