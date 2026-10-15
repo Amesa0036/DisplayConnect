@@ -41,6 +41,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -52,6 +53,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -65,6 +67,7 @@ import com.example.displayconnect.ui.components.TripProgressCard
 import com.example.displayconnect.ui.theme.Alert
 import com.example.displayconnect.ui.theme.Ok
 import com.example.displayconnect.ui.theme.Warn
+import com.example.displayconnect.utils.TransmissionHub
 import com.example.displayconnect.viewmodel.MainViewModel
 import org.json.JSONArray
 import org.json.JSONObject
@@ -112,6 +115,12 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val tripProgress by viewModel.tripProgress.collectAsState()
+    val liveNav by TransmissionHub.liveNav.collectAsState()
+    val view = LocalView.current
+    DisposableEffect(uiState.isNavigating) {
+        view.keepScreenOn = uiState.isNavigating
+        onDispose { view.keepScreenOn = false }
+    }
     val context = LocalContext.current
     val recents = remember { RecentDestinations(context.applicationContext) }
     var recentList by remember { mutableStateOf(recents.load()) }
@@ -126,6 +135,7 @@ fun HomeScreen(
     }
 
     val hasDestination = uiState.destLabel.isNotBlank()
+    val scrollState = rememberScrollState()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -136,11 +146,11 @@ fun HomeScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 20.dp)
-                .verticalScroll(rememberScrollState()),
+                .then(if (uiState.isNavigating) Modifier else Modifier.verticalScroll(scrollState)),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Barra superior: chip Bluetooth + ajustes
-            Row(
+            if (!uiState.isNavigating) Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -170,40 +180,13 @@ fun HomeScreen(
             }
 
             if (uiState.isNavigating) {
-                // ---------- Navegando ----------
-                Text(
-                    "Navegando",
-                    fontSize = 34.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onBackground
+                // ---------- Navegando: espejo de la placa ----------
+                NavMirror(
+                    nav = liveNav,
+                    trip = tripProgress,
+                    destLabel = uiState.destLabel,
+                    onStop = { viewModel.stopNavigation() }
                 )
-                if (hasDestination) {
-                    Text(
-                        uiState.destLabel,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                TripProgressCard(tripProgress)
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(72.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(Alert)
-                        .combinedClickable(
-                            onClick = {},
-                            onLongClick = { viewModel.stopNavigation() }
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "Mantén pulsado para parar",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color.White
-                    )
-                }
             } else {
                 // ---------- Buscar destino ----------
                 Text(
@@ -332,14 +315,16 @@ fun HomeScreen(
                 }
             }
 
-            TextButton(
-                onClick = onOpenClassic,
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            ) {
-                Text("Modo clásico (Bluetooth, coordenadas)",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (!uiState.isNavigating) {
+                TextButton(
+                    onClick = onOpenClassic,
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Text("Modo clásico (Bluetooth, coordenadas)",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Spacer(Modifier.height(8.dp))
             }
-            Spacer(Modifier.height(8.dp))
         }
     }
 }
