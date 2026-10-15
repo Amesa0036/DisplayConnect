@@ -3,6 +3,7 @@ package com.example.displayconnect.utils
 import com.example.displayconnect.models.TransmissionStats
 import com.example.displayconnect.routing.TripProgress
 import com.example.displayconnect.offline.OfflineMapState
+import com.example.displayconnect.protocol.NavMessage
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -27,6 +28,11 @@ object TransmissionHub {
 
     fun updateTripProgress(progress: TripProgress) { _tripProgress.value = progress }
 
+    // Ultimo frame enviado a la placa (para el espejo en el movil). Solo lectura de la UI.
+    private val _liveNav = MutableStateFlow<NavMessage?>(null)
+    val liveNav: StateFlow<NavMessage?> = _liveNav.asStateFlow()
+    fun updateLiveNav(message: NavMessage) { _liveNav.value = message }
+
     private val _isNavigating = MutableStateFlow(false)
     val isNavigating: StateFlow<Boolean> = _isNavigating.asStateFlow()
 
@@ -37,6 +43,7 @@ object TransmissionHub {
         _offlineMap.value = OfflineMapState()
         _gps.value = com.example.displayconnect.navigation.GpsStatus()
         _tripProgress.value = TripProgress()
+        _liveNav.value = null
         _isNavigating.value = active
         if (!active) {
             _stats.value = TransmissionStats()
