@@ -16,11 +16,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.example.displayconnect.R
+import com.example.displayconnect.ui.screens.HomeScreen
 import com.example.displayconnect.ui.screens.MainScreen
 import com.example.displayconnect.ui.screens.SettingsScreen
 
 object Routes {
-    const val MAIN = "main"
+    const val HOME = "home"
+    const val CLASSIC = "classic"
     const val SETTINGS = "settings"
 }
 
@@ -34,10 +36,18 @@ fun DisplayConnectNavHost(
 
     NavHost(
         navController = navController,
-        startDestination = Routes.MAIN,
+        startDestination = Routes.HOME,
         modifier = modifier
     ) {
-        composable(Routes.MAIN) {
+        composable(Routes.HOME) {
+            HomeScreen(
+                onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenClassic = { navController.navigate(Routes.CLASSIC) },
+                onRequestLocationPermission = onRequestLocationPermission,
+                onRequestBluetoothPermission = onRequestBluetoothPermission
+            )
+        }
+        composable(Routes.CLASSIC) {
             MainScreen(
                 onNavigateToSettings = { navController.navigate(Routes.SETTINGS) },
                 onRequestLocationPermission = onRequestLocationPermission,
