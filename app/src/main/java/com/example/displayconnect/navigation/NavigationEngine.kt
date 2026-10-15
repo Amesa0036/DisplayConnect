@@ -343,6 +343,7 @@ class NavigationEngine(
             return@withContext
         }
         lastMessage = message
+        TransmissionHub.updateLiveNav(message)
         if (navClient.sendNavMessage(json)) {
             statsTracker.onNavUpdate(json.toByteArray().size)
             TransmissionHub.updateStats(
