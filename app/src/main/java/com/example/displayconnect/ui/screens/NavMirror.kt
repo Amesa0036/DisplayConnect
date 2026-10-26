@@ -184,16 +184,24 @@ fun NavMirror(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Text(
-                    "Elige por dónde empezar:",
+                    if (joinOptions.any { it.autoRemainingMs != null }) "Reincorporación automática" else "Elige dónde incorporarte:",
                     fontSize = 14.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                joinOptions.firstOrNull()?.accessStatus?.let {
+                    Text(it, fontSize = 12.sp, color = Warn)
+                }
                 joinOptions.forEach { opt ->
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainer)
+                            .drawBehind {
+                                if (opt.autoRemainingMs != null) drawRect(
+                                    color = Color(0xFF245DA8),
+                                    size = Size(size.width * opt.autoFraction.coerceIn(0f, 1f), size.height))
+                            }
                             .border(1.dp, Outline, RoundedCornerShape(14.dp))
                             .clickable { onSelectJoin(opt.index) }
                             .padding(vertical = 10.dp, horizontal = 14.dp),
@@ -207,11 +215,18 @@ fun NavMirror(
                             color = Color.White,
                             modifier = Modifier.weight(1f)
                         )
-                        Text(
-                            "a ${opt.distanceM.toInt()} m",
-                            fontSize = 14.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        Column(horizontalAlignment = Alignment.End) {
+                            Text(
+                                opt.roadDistanceM?.let { "${it.toInt()} m por carretera" }
+                                    ?: "${opt.distanceM.toInt()} m en línea recta",
+                                fontSize = 12.sp,
+                                color = Color.White
+                            )
+                            opt.autoRemainingMs?.let {
+                                Text(if (it > 0) "Auto en ${(it + 999) / 1000} s" else "Verificando acceso...", fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold, color = Color.White)
+                            }
+                        }
                     }
                 }
             }
