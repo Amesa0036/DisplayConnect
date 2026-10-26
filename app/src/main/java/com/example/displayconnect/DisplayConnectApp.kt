@@ -9,6 +9,9 @@ class DisplayConnectApp : Application() {
     lateinit var settingsRepository: SettingsRepository
         private set
 
+    lateinit var altitudeMonitor: com.example.displayconnect.navigation.AltitudeMonitor
+        private set
+
     lateinit var navClient: BleNavClient
         private set
 
@@ -17,6 +20,7 @@ class DisplayConnectApp : Application() {
         com.example.displayconnect.utils.AppLanguage.load(this)
         settingsRepository = SettingsRepository(this)
         navClient = BleNavClient(this)
+        altitudeMonitor = com.example.displayconnect.navigation.AltitudeMonitor(this)
     }
 
     override fun onTerminate() {
