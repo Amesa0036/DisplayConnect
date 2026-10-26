@@ -19,6 +19,7 @@ data class NavMessage(
     val html: String? = null,
     val remainingDistanceM: Int? = null,
     val remainingDurationS: Int? = null,
+    val routeTotalDistanceM: Int? = null,
     val offRoute: Boolean = false,
     val language: String = "pt-BR",
     val gpsWeak: Boolean = false,
@@ -49,6 +50,7 @@ data class NavMessage(
             .put("distance_m", distanceM)
             .put("remaining_m", remainingDistanceM ?: -1)
             .put("remaining_s", remainingDurationS ?: -1)
+            .put("route_total_m", routeTotalDistanceM ?: -1)
             .put("off_route", offRoute)
             .put("lang", language)
             .put("gps_weak", gpsWeak)
