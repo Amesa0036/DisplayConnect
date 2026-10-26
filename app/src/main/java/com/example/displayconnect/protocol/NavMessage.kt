@@ -29,7 +29,11 @@ data class NavMessage(
     val maneuverExit: Int? = null,
     val speedKmh: Int? = null,
     val speedLimitKmh: Int? = null,
-    val speedLimitState: String = "unknown"
+    val speedLimitState: String = "unknown",
+    val altitudeWgs84M: Int? = null,
+    val altitudeReference: String = "wgs84",
+    val altitudeSource: String = "gps",
+    val altitudeAccuracyM: Int? = null
 
 ) {
     fun toJson(): String {
@@ -57,6 +61,10 @@ data class NavMessage(
             .put("speed_kmh", speedKmh ?: -1)
             .put("speed_limit_kmh", speedLimitKmh ?: -1)
             .put("speed_limit_state", speedLimitState)
+            .put("altitude_m", altitudeWgs84M ?: JSONObject.NULL)
+            .put("altitude_ref", altitudeReference)
+            .put("altitude_source", altitudeSource)
+            .put("altitude_accuracy_m", altitudeAccuracyM ?: JSONObject.NULL)
             .put("street", java.text.Normalizer.normalize(street, java.text.Normalizer.Form.NFC).take(47))
             .put("route", route)
         if (streetSegments.isNotEmpty()) {
