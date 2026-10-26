@@ -22,7 +22,7 @@
     <string name="search_city_hint">Ex.: Campinas, SP. Ajuda a encontrar ruas com nomes iguais.</string>
     <string name="search_number_unconfirmed">Número não confirmado. Confira o trecho da rua antes de selecionar.</string>
     <string name="search_attribution">Dados © colaboradores OpenStreetMap · Busca Nominatim / Photon. Confira cidade e endereço ao selecionar.</string>
-    <string name="app_name">DisplayConnect</string>
+    <string name="app_name">Rutapalagos</string>
     <string name="settings">Configurações</string>
     <string name="settings_title">Configurações</string>
     <string name="esp_ip">IP do ESP32</string>
