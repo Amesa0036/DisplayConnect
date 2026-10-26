@@ -22,7 +22,7 @@
     <string name="search_city_hint">Example: Campinas, SP. Helps distinguish streets with the same name.</string>
     <string name="search_number_unconfirmed">House number not confirmed. Check the street section before selecting.</string>
     <string name="search_attribution">Data © OpenStreetMap contributors · Search Nominatim / Photon. Check the city and address before selecting.</string>
-    <string name="app_name">DisplayConnect</string>
+    <string name="app_name">Rutapalagos</string>
     <string name="settings">Settings</string>
     <string name="settings_title">Settings</string>
     <string name="esp_ip">ESP32 IP</string>
