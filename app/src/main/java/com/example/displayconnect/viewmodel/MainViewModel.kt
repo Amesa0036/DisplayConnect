@@ -40,6 +40,50 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val app = application as DisplayConnectApp
     private val navClient = app.navClient
+    val altitudeMonitor = app.altitudeMonitor
+    val altitudeStatus = altitudeMonitor.state
+    val boardInfo = navClient.boardInfo
+    val boardBusy = navClient.boardBusy
+    private val _boardMessage = MutableStateFlow<String?>(null)
+    val boardMessage: StateFlow<String?> = _boardMessage.asStateFlow()
+
+    fun refreshBoardInfo() = runBoardCommand("board_info")
+    fun identifyBoard() = runBoardCommand("board_identify")
+    fun renameBoard(name: String) {
+        if (name.length !in 1..20 || name != name.trim() ||
+            !name.all { it in 'A'..'Z' || it in 'a'..'z' || it in '0'..'9' || it in " -_" }) {
+            _boardMessage.value = "Nombre no valido: usa 1-20 letras sin acentos, numeros, espacios, - o _."
+            return
+        }
+        runBoardCommand("board_rename", name)
+    }
+    private fun runBoardCommand(type: String, name: String? = null) {
+        if (_uiState.value.isNavigating || navClient.boardBusy.value) return
+        val expectedAddress = _uiState.value.bleDeviceAddress
+        val expectedId = navClient.boardInfo.value?.id
+        if (type != "board_info" && expectedId == null) {
+            _boardMessage.value = "Lee primero la identidad de la placa conectada."
+            return
+        }
+        viewModelScope.launch {
+            _boardMessage.value = null
+            val result = navClient.boardCommand(type, name)
+            result.onSuccess { info ->
+                if (info.address != expectedAddress || (expectedId != null && info.id != expectedId)) {
+                    _boardMessage.value = "La identidad ha cambiado. Comprueba la placa antes de continuar."
+                    return@onSuccess
+                }
+                // Only update the saved label after the board confirms NVS commit.
+                if (type == "board_rename") settingsRepository.updateBleDevice(info.address, info.name)
+                _boardMessage.value = when(type) {
+                    "board_rename" -> "Nombre guardado en la placa. Se anunciara al desconectar."
+                    "board_identify" -> "Identidad mostrada en la pantalla durante 8 segundos."
+                    else -> "Identidad leida de la placa conectada."
+                }
+            }.onFailure { _boardMessage.value = it.message ?: "No se pudo confirmar la operacion" }
+        }
+    }
+
     private val settingsRepository = app.settingsRepository
     private val geocoder = NominatimGeocoder()
     private var searchJob: Job? = null
