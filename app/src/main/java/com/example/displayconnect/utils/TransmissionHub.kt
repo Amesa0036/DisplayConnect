@@ -28,6 +28,20 @@ object TransmissionHub {
 
     fun updateTripProgress(progress: TripProgress) { _tripProgress.value = progress }
 
+    // Opciones de enganche a una traza GPX cuando hay ramas ambiguas (ida/vuelta,
+    // cierre circular): la app las muestra y el usuario elige expresamente por
+    // cual empezar. Nunca se arranca por cercania.
+    data class GpxJoinOption(
+        val index: Int,
+        val progressM: Double,
+        val distanceM: Double,
+        val bearing: Float,
+        val isRouteStart: Boolean
+    )
+    private val _gpxJoinOptions = MutableStateFlow<List<GpxJoinOption>>(emptyList())
+    val gpxJoinOptions: StateFlow<List<GpxJoinOption>> = _gpxJoinOptions.asStateFlow()
+    fun updateGpxJoinOptions(options: List<GpxJoinOption>) { _gpxJoinOptions.value = options }
+
     // Ultimo frame enviado a la placa (para el espejo en el movil). Solo lectura de la UI.
     private val _liveNav = MutableStateFlow<NavMessage?>(null)
     val liveNav: StateFlow<NavMessage?> = _liveNav.asStateFlow()
@@ -44,6 +58,7 @@ object TransmissionHub {
         _gps.value = com.example.displayconnect.navigation.GpsStatus()
         _tripProgress.value = TripProgress()
         _liveNav.value = null
+        _gpxJoinOptions.value = emptyList()
         _isNavigating.value = active
         if (!active) {
             _stats.value = TransmissionStats()
