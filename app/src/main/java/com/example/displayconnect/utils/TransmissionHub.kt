@@ -36,7 +36,11 @@ object TransmissionHub {
         val progressM: Double,
         val distanceM: Double,
         val bearing: Float,
-        val isRouteStart: Boolean
+        val isRouteStart: Boolean,
+        val roadDistanceM: Double? = null,
+        val autoRemainingMs: Long? = null,
+        val autoFraction: Float = 0f,
+        val accessStatus: String? = null
     )
     private val _gpxJoinOptions = MutableStateFlow<List<GpxJoinOption>>(emptyList())
     val gpxJoinOptions: StateFlow<List<GpxJoinOption>> = _gpxJoinOptions.asStateFlow()
