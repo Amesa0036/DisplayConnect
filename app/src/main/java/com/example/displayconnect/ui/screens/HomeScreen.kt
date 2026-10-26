@@ -118,6 +118,7 @@ fun HomeScreen(
     viewModel: MainViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val altitudeStatus by viewModel.altitudeStatus.collectAsState()
     val tripProgress by viewModel.tripProgress.collectAsState()
     val gpxJoinOptions by viewModel.gpxJoinOptions.collectAsState()
     val liveNav by TransmissionHub.liveNav.collectAsState()
@@ -187,7 +188,12 @@ fun HomeScreen(
                 }
             }
 
+            if (!uiState.isNavigating) OutlinedButton(onClick = onOpenClassic) {
+                Text("Elegir o configurar mi placa")
+            }
+
             if (uiState.isNavigating) {
+                Text(altitudeStatus.message, style = MaterialTheme.typography.bodySmall)
                 // ---------- Navegando: espejo de la placa ----------
                 NavMirror(
                     nav = liveNav,
