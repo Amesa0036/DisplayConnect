@@ -74,6 +74,7 @@ class NavigationForegroundService : Service() {
             settingsProvider = { app.settingsRepository.settings.first() },
             onNavigationEnded = { stopNavigationService() }
         )
+        engine.altitudeMonitor=app.altitudeMonitor
         navigationEngine = engine
         engine.startNavigation(destLat, destLon)
     }
@@ -102,6 +103,7 @@ class NavigationForegroundService : Service() {
             settingsProvider = { app.settingsRepository.settings.first() },
             onNavigationEnded = { stopNavigationService() }
         )
+        engine.altitudeMonitor=app.altitudeMonitor
         navigationEngine = engine
         engine.startNavigationWithRoute(prepared, last.lat, last.lon)
     }
