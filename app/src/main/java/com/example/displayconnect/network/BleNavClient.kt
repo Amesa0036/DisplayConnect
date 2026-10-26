@@ -36,6 +36,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -54,7 +55,7 @@ class BleNavClient(context: Context) {
         appContext.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
     private val adapter: BluetoothAdapter? get() = bluetoothManager.adapter
 
-    private var gatt: BluetoothGatt? = null
+    @Volatile private var gatt: BluetoothGatt? = null
     private var rxCharacteristic: BluetoothGattCharacteristic? = null
     private var writeChunkSize = DEFAULT_CHUNK
     private var reconnectJob: Job? = null
@@ -81,7 +82,80 @@ class BleNavClient(context: Context) {
         }
     }
 
-    private var targetAddress: String = ""
+    @Volatile private var targetAddress: String = ""
+    private val _boardInfo = MutableStateFlow<BoardInfo?>(null)
+    val boardInfo: StateFlow<BoardInfo?> = _boardInfo.asStateFlow()
+    private val _boardBusy = MutableStateFlow(false)
+    val boardBusy: StateFlow<Boolean> = _boardBusy.asStateFlow()
+    private val boardMutex = Mutex()
+    private val boardDecoder = BoardReplyDecoder()
+    private var boardReplyId: String? = null
+    private var boardReply: CompletableDeferred<JSONObject>? = null
+
+    private fun clearBoardSession() {
+        _boardInfo.value = null
+        boardDecoder.reset()
+        synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null }
+    }
+
+    /** A command never enters the conflated navigation channel. One request at a time. */
+    suspend fun boardCommand(type: String, newName: String? = null): Result<BoardInfo> = boardMutex.withLock {
+        _boardBusy.value = true
+        try {
+            val connection = gatt ?: error("La placa no esta conectada")
+            val characteristic = rxCharacteristic ?: error("La placa no esta lista")
+            check(_connectionState.value == ConnectionState.CONNECTED) { "La placa no esta conectada" }
+            val address = targetAddress
+            val id = UUID.randomUUID().toString()
+            val reply = CompletableDeferred<JSONObject>()
+            synchronized(this) { boardReplyId = id; boardReply = reply }
+            val request = JSONObject().put("type", type).put("request_id", id)
+            newName?.let { request.put("name", it) }
+            if (type != "board_info") {
+                val identity = _boardInfo.value ?: error("Lee primero la identidad de la placa")
+                check(identity.address == address) { "La identidad corresponde a otra placa" }
+                request.put("board_id", identity.id)
+            }
+            val written = writeMutex.withLock {
+                check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+                writeInChunks(connection, characteristic, ("\n" + request + "\n").toByteArray(Charsets.UTF_8))
+            }
+            check(written) { "No se pudo enviar el cambio a la placa" }
+            val response = withTimeoutOrNull(5000) { reply.await() }
+                ?: error("La placa no confirma. Comprueba que tiene firmware v18 o posterior")
+            check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+            check(response.optBoolean("ok", false)) { response.optString("error", "La placa rechazo la peticion") }
+            val boardId = response.optString("board_id")
+            val boardName = response.optString("name")
+            check(boardId.matches(Regex("[0-9A-F]{12}")) && boardName.isNotBlank()) { "Identidad de placa no valida" }
+            check(newName == null || boardName == newName) { "La placa no confirma el nombre solicitado" }
+            val previousIdentity = _boardInfo.value
+            check(previousIdentity == null || previousIdentity.id == boardId) { "La identidad de la placa ha cambiado" }
+            val info = BoardInfo(boardId, boardName, address)
+            _boardInfo.value = info
+            Result.success(info)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null }
+            _boardBusy.value = false
+        }
+    }
+
+    private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
+        if (connection !== gatt) return
+        for (line in boardDecoder.feed(bytes)) {
+            try {
+                val json = JSONObject(line)
+                synchronized(this) {
+                    if (json.optString("type") == "board_reply" && json.optString("request_id") == boardReplyId)
+                        boardReply?.complete(json)
+                }
+            } catch (_: Exception) { }
+        }
+    }
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState.asStateFlow()
@@ -155,6 +229,7 @@ class BleNavClient(context: Context) {
     }
 
     fun disconnect(manual: Boolean = true) {
+        clearBoardSession()
         if (manual) {
             shouldReconnect.set(false)
         }
@@ -240,9 +315,10 @@ class BleNavClient(context: Context) {
         gatt: BluetoothGatt,
         characteristic: BluetoothGattCharacteristic,
         payload: ByteArray
-    ) {
+    ): Boolean {
         var offset = 0
         while (offset < payload.size) {
+            if (gatt !== this.gatt) return false
             val end = minOf(offset + writeChunkSize, payload.size)
             val chunk = payload.copyOfRange(offset, end)
             val deferred = CompletableDeferred<Boolean>()
@@ -264,14 +340,15 @@ class BleNavClient(context: Context) {
             }
             if (!queued) {
                 writeAck.compareAndSet(deferred, null)
-                break
+                return false
             }
 
             val acked = withTimeoutOrNull(WRITE_TIMEOUT_MS) { deferred.await() } == true
             writeAck.compareAndSet(deferred, null)
-            if (!acked) break
+            if (!acked) return false
             offset = end
         }
+        return true
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -301,6 +378,7 @@ class BleNavClient(context: Context) {
 
     private val gattCallback = object : BluetoothGattCallback() {
         override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            if (gatt !== this@BleNavClient.gatt) { gatt.close(); return }
             if (newState == BluetoothProfile.STATE_CONNECTED && status == BluetoothGatt.GATT_SUCCESS) {
                 _connectionState.value = ConnectionState.CONNECTING
                 // Request MTU first; discover services in onMtuChanged (or fallback).
@@ -308,6 +386,7 @@ class BleNavClient(context: Context) {
                     gatt.discoverServices()
                 }
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                clearBoardSession()
                 heartbeatJob?.cancel()
                 rxCharacteristic = null
                 writeAck.getAndSet(null)?.complete(false)
@@ -325,6 +404,7 @@ class BleNavClient(context: Context) {
         }
 
         override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
+            if (gatt !== this@BleNavClient.gatt) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 writeChunkSize = (mtu - 3).coerceIn(20, 500)
             }
@@ -336,10 +416,12 @@ class BleNavClient(context: Context) {
             characteristic: BluetoothGattCharacteristic,
             status: Int
         ) {
+            if (gatt !== this@BleNavClient.gatt) return
             writeAck.getAndSet(null)?.complete(status == BluetoothGatt.GATT_SUCCESS)
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (gatt !== this@BleNavClient.gatt) return
             if (status != BluetoothGatt.GATT_SUCCESS) {
                 _connectionState.value = ConnectionState.ERROR
                 scheduleReconnect()
@@ -355,22 +437,50 @@ class BleNavClient(context: Context) {
             }
             rxCharacteristic = rx
 
-            gatt.setCharacteristicNotification(tx, true)
+            if (!gatt.setCharacteristicNotification(tx, true)) {
+                _connectionState.value = ConnectionState.ERROR
+                return
+            }
             val cccd = tx.getDescriptor(CCCD_UUID)
             if (cccd != null) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    if (gatt.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) != BluetoothGatt.GATT_SUCCESS)
+                        _connectionState.value = ConnectionState.ERROR
                 } else {
                     @Suppress("DEPRECATION")
                     run {
                         cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-                        gatt.writeDescriptor(cccd)
+                        if (!gatt.writeDescriptor(cccd)) _connectionState.value = ConnectionState.ERROR
                     }
                 }
             }
 
+            // Wait for CCCD acknowledgement before enabling commands/navigation.
+            if (cccd == null) {
+                _connectionState.value = ConnectionState.ERROR
+                return
+            }
+        }
+
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            if (gatt !== this@BleNavClient.gatt || descriptor.uuid != CCCD_UUID) return
+            if (status != BluetoothGatt.GATT_SUCCESS) {
+                _connectionState.value = ConnectionState.ERROR
+                return
+            }
             _connectionState.value = ConnectionState.CONNECTED
             startHeartbeat()
+            scope.launch { boardCommand("board_info") }
+        }
+
+        @Deprecated("Android legacy callback")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            if (Build.VERSION.SDK_INT < 33 && characteristic.uuid == TX_UUID)
+                receiveBoardData(gatt, characteristic.value ?: return)
+        }
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            if (characteristic.uuid == TX_UUID) receiveBoardData(gatt, value)
         }
     }
 
