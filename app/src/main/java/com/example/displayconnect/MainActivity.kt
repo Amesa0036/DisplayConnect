@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -67,7 +68,7 @@ class MainActivity : ComponentActivity() {
             val language by AppLanguage.language.collectAsState()
             val deviceConfiguration = LocalConfiguration.current
             val localized = remember(language, deviceConfiguration) { AppLanguage.context(this, language) }
-            CompositionLocalProvider(LocalContext provides localized, LocalConfiguration provides localized.resources.configuration) {
+            CompositionLocalProvider(LocalActivityResultRegistryOwner provides this@MainActivity, LocalContext provides localized, LocalConfiguration provides localized.resources.configuration) {
             DisplayConnectTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     DisplayConnectNavHost(
