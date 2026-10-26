@@ -23,7 +23,7 @@
     <string name="search_city_hint">Ejemplo: Madrid. Ayuda a distinguir calles con el mismo nombre.</string>
     <string name="search_number_unconfirmed">Número de portal sin confirmar. Comprueba el tramo de la calle antes de seleccionarlo.</string>
     <string name="search_attribution">Datos © colaboradores de OpenStreetMap · Búsqueda Nominatim / Photon. Comprueba la ciudad y la dirección antes de seleccionarlas.</string>
-    <string name="app_name">DisplayConnect</string>
+    <string name="app_name">Rutapalagos</string>
     <string name="settings">Ajustes</string>
     <string name="settings_title">Ajustes</string>
     <string name="esp_ip">IP del ESP32</string>
