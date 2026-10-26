@@ -15,6 +15,7 @@ import com.example.displayconnect.DisplayConnectApp
 import com.example.displayconnect.MainActivity
 import com.example.displayconnect.R
 import com.example.displayconnect.routing.OsrmRouteProvider
+import com.example.displayconnect.routing.PendingRouteHolder
 import com.example.displayconnect.routing.OverpassStreetProvider
 import com.example.displayconnect.offline.OfflineMapRepository
 import java.io.File
@@ -35,6 +36,7 @@ class NavigationForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> handleStart(intent)
+            ACTION_START_ROUTE -> handleStartRoute()
             ACTION_STOP -> stopNavigationService()
             ACTION_RETRY_DOWNLOAD -> navigationEngine?.retryOfflineDownload()
         }
@@ -72,6 +74,34 @@ class NavigationForegroundService : Service() {
         )
         navigationEngine = engine
         engine.startNavigation(destLat, destLon)
+    }
+
+    /** Arranca con la ruta GPX preparada que dejo el ViewModel en PendingRouteHolder. */
+    private fun handleStartRoute() {
+        val prepared = PendingRouteHolder.take()
+        if (prepared == null || prepared.coordinates.size < 2) {
+            stopSelf()
+            return
+        }
+        val last = prepared.coordinates.last()
+
+        NavigationWakeLock.acquire(this)
+        createNotificationChannel()
+        startForegroundWithNotification(buildNotification())
+
+        val app = application as DisplayConnectApp
+        navigationEngine?.stopNavigation()
+        val engine = NavigationEngine(
+            scope = serviceScope,
+            locationTracker = LocationTracker(this),
+            routeProvider = OsrmRouteProvider(),
+            offlineMap = OfflineMapRepository(File(filesDir, "offline-map-v1"), OverpassStreetProvider()),
+            navClient = app.navClient,
+            settingsProvider = { app.settingsRepository.settings.first() },
+            onNavigationEnded = { stopNavigationService() }
+        )
+        navigationEngine = engine
+        engine.startNavigationWithRoute(prepared, last.lat, last.lon)
     }
 
     private fun stopNavigationService() {
@@ -130,6 +160,7 @@ class NavigationForegroundService : Service() {
 
     companion object {
         const val ACTION_START = "com.example.displayconnect.action.START_NAV"
+        const val ACTION_START_ROUTE = "com.example.displayconnect.action.START_PREPARED_ROUTE"
         const val ACTION_STOP = "com.example.displayconnect.action.STOP_NAV"
         const val ACTION_RETRY_DOWNLOAD = "com.example.displayconnect.action.RETRY_MAP_DOWNLOAD"
         const val EXTRA_DEST_LAT = "extra_dest_lat"
@@ -142,6 +173,13 @@ class NavigationForegroundService : Service() {
                 action = ACTION_START
                 putExtra(EXTRA_DEST_LAT, destLat)
                 putExtra(EXTRA_DEST_LON, destLon)
+            }
+            context.startForegroundService(intent)
+        }
+
+        fun startPreparedRoute(context: Context) {
+            val intent = Intent(context, NavigationForegroundService::class.java).apply {
+                action = ACTION_START_ROUTE
             }
             context.startForegroundService(intent)
         }

@@ -56,6 +56,7 @@ class NavigationEngine(
     private var rerouteJob: Deferred<Result<RouteData>>? = null
     private val reroutePolicy = ReroutePolicy()
     private var rerouteFailed = false
+    private var gpxMode = false
     private var activeSettings: AppSettings? = null
     private var gpsFilter: GpsFilter? = null
     private var gpsWatchdog: Job? = null
@@ -65,10 +66,20 @@ class NavigationEngine(
     private val speedLimitMatcher = com.example.displayconnect.routing.SpeedLimitMatcher()
 
     fun startNavigation(destLat: Double, destLon: Double) {
+        beginNavigation(LatLon(destLat, destLon), prepared = null)
+    }
+
+    /** Navega una ruta ya preparada (importada de GPX), sin llamar al router. */
+    fun startNavigationWithRoute(prepared: RouteData, destLat: Double, destLon: Double) {
+        beginNavigation(LatLon(destLat, destLon), prepared = prepared)
+    }
+
+    private fun beginNavigation(dest: LatLon, prepared: RouteData?) {
         stopNavigation()
         MapsHtmlHolder.clear()
         TransmissionHub.clearNavigationError()
-        destination = LatLon(destLat, destLon)
+        destination = dest
+        gpxMode = prepared != null
         TransmissionHub.setNavigating(true)
         locationJob = scope.launch {
             try {
@@ -87,9 +98,13 @@ class NavigationEngine(
                 val origin = LatLon(originUpdate.lat, originUpdate.lon)
                 val dest = destination ?: return@launch
                 // Reopening the same trip near its route works without another routing request.
-                val saved = offlineMap.findRoute(origin, dest, settings.routeProfile)
-                val selected = saved ?: routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
-                    error("Não foi possível calcular a rota. Confira a internet e o destino.")
+                val selected = if (prepared != null && prepared.coordinates.size >= 2) {
+                    prepared
+                } else {
+                    val saved = offlineMap.findRoute(origin, dest, settings.routeProfile)
+                    saved ?: routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
+                        error("Não foi possível calcular a rota. Confira a internet e o destino.")
+                    }
                 }
                 offlineMap.saveRoute(selected, dest, settings.routeProfile)
                 route = selected
@@ -158,6 +173,7 @@ class NavigationEngine(
         gpsFilter = null
         lastMessage = null
         lastAcceptedMs = 0
+        gpxMode = false
         route = null
         progressCalculator = null
         destination = null
@@ -189,10 +205,15 @@ class NavigationEngine(
         val buildStarted = SystemClock.elapsedRealtime()
         var currentRoute = route ?: return@withContext
         val rawPosition = LatLon(raw.lat, raw.lon)
-        var progress = progressCalculator?.update(rawPosition)
-            ?: com.example.displayconnect.routing.TripProgress()
         val nowMs = SystemClock.elapsedRealtime()
         val fresh = nowMs - raw.elapsedMs in 0..3000
+        // Rumbo fiable solo en movimiento y con fix razonable: se usa para
+        // desambiguar ramas proximas (ida/vuelta) en RouteProgressCalculator.
+        val reliableBearing = raw.bearing.takeIf {
+            fresh && it.isFinite() && raw.speedMps >= 2.5f && raw.accuracyM <= 30f
+        }
+        var progress = progressCalculator?.update(rawPosition, reliableBearing)
+            ?: com.example.displayconnect.routing.TripProgress()
         val away = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         // A completed network request never writes shared route state itself.
         // Install only here, serially with GPS frames and only if still off the old route.
@@ -233,7 +254,7 @@ class NavigationEngine(
         }
         val confirmed = reroutePolicy.observe(progress.distanceFromRouteM, raw.accuracyM,
             raw.elapsedMs, nowMs)
-        if (rerouteJob == null && confirmed) {
+        if (!gpxMode && rerouteJob == null && confirmed) {
             destination?.let { dest ->
                 reroutePolicy.requestStarted(nowMs)
                 rerouteFailed = false
@@ -320,6 +341,7 @@ class NavigationEngine(
             distanceM = distanceM,
             remainingDistanceM = progress.remainingDistanceM,
             remainingDurationS = progress.remainingDurationS,
+            routeTotalDistanceM = currentRoute.distanceM.takeIf { it.isFinite() && it > 0 }?.toInt(),
             offRoute = progress.offRoute,
             street = step?.street ?: "",
             routeScreenPoints = screenRoute,
