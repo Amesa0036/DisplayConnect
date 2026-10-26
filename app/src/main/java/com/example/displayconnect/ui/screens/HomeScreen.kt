@@ -1,6 +1,8 @@
 package com.example.displayconnect.ui.screens
 
 import android.content.Context
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +36,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -61,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.displayconnect.models.ConnectionState
+import com.example.displayconnect.models.MainUiState
 import com.example.displayconnect.routing.PlaceSearchResult
 import com.example.displayconnect.routing.RouteProfile
 import com.example.displayconnect.ui.components.TripProgressCard
@@ -122,6 +126,9 @@ fun HomeScreen(
         onDispose { view.keepScreenOn = false }
     }
     val context = LocalContext.current
+    val gpxLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.onGpxFileSelected(it) }
+    }
     val recents = remember { RecentDestinations(context.applicationContext) }
     var recentList by remember { mutableStateOf(recents.load()) }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -313,6 +320,14 @@ fun HomeScreen(
                         )
                     }
                 }
+                // ---------- Ruta GPX ----------
+                GpxSection(
+                    uiState = uiState,
+                    onPick = { gpxLauncher.launch(arrayOf("*/*")) },
+                    onPrepare = { viewModel.prepareGpxRoute() },
+                    onStart = { viewModel.startGpxNavigation(onRequestLocationPermission) },
+                    onClear = { viewModel.clearGpx() }
+                )
             }
 
             if (!uiState.isNavigating) {
@@ -324,6 +339,87 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun GpxSection(
+    uiState: MainUiState,
+    onPick: () -> Unit,
+    onPrepare: () -> Unit,
+    onStart: () -> Unit,
+    onClear: () -> Unit
+) {
+    if (uiState.gpxStatus == "none") {
+        OutlinedButton(
+            onClick = onPick,
+            modifier = Modifier.fillMaxWidth().height(52.dp),
+            shape = RoundedCornerShape(18.dp)
+        ) {
+            Text("Cargar ruta GPX", fontSize = 16.sp)
+        }
+        return
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(28.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+    ) {
+        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Ruta GPX", style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary)
+            Text(uiState.gpxName, fontSize = 18.sp, fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface, maxLines = 2)
+            if (uiState.gpxInfo.isNotBlank()) {
+                Text(uiState.gpxInfo, style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            when (uiState.gpxStatus) {
+                "loaded" -> {
+                    Button(
+                        onClick = onPrepare,
+                        modifier = Modifier.fillMaxWidth().height(52.dp),
+                        shape = RoundedCornerShape(18.dp)
+                    ) { Text("Preparar ruta", fontSize = 16.sp) }
+                    Text("Necesita internet para generar las indicaciones de giro.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                "preparing" -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp)
+                    Text("Preparando indicaciones… ${uiState.gpxProgress}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface)
+                }
+                "ready" -> {
+                    if (!uiState.gpxArrowsComplete) {
+                        Text("Hay tramos sin indicaciones; el mapa y la distancia funcionan igual.",
+                            style = MaterialTheme.typography.bodySmall, color = Warn)
+                    }
+                    if (uiState.connectionState != ConnectionState.CONNECTED) {
+                        Text("La placa no está conectada. Toca el chip de arriba.",
+                            style = MaterialTheme.typography.bodySmall, color = Warn)
+                    }
+                    Button(
+                        onClick = onStart,
+                        modifier = Modifier.fillMaxWidth().height(64.dp),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary
+                        )
+                    ) { Text("Empezar", fontSize = 20.sp, fontWeight = FontWeight.Bold) }
+                }
+                "error" -> Text("No se pudo usar ese archivo.",
+                    style = MaterialTheme.typography.bodyMedium, color = Alert)
+            }
+            TextButton(onClick = onClear, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                Text("Quitar")
             }
         }
     }
