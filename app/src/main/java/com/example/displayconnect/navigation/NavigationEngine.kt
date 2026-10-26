@@ -46,7 +46,8 @@ class NavigationEngine(
     private val offlineMap: OfflineMapRepository,
     private val navClient: BleNavClient,
     private val settingsProvider: suspend () -> AppSettings,
-    private val onNavigationEnded: () -> Unit = {}
+    private val onNavigationEnded: () -> Unit = {},
+    private val rejoinRoute: suspend (LatLon, LatLon, com.example.displayconnect.routing.RouteProfile, Float?) -> Result<RouteData> = routeProvider::fetchRoute
 ) {
 
     private var route: RouteData? = null
@@ -70,8 +71,24 @@ class NavigationEngine(
     private var gpxRejoinAttempts = 0
     private var gpxRejoinAmbiguous = false
     // Candidatos de enganche publicados mientras la traza es ambigua: la app
-    // los muestra y el usuario elige expresamente; nunca se infiere por cercania.
+    // los muestra; la salida confirmada admite temporizador con accesos comparados.
     private var gpxJoinCandidates: List<TrackRejoin.JoinCandidate> = emptyList()
+    private data class JoinQuote(val candidate: TrackRejoin.JoinCandidate, val road: RouteData?)
+    private var joinQuotes: Deferred<List<JoinQuote>>? = null
+    private var joinQuoteOrigin: LatLon? = null
+    private var joinQuoteStartedMs = 0L
+    private var joinQuoteResults: List<JoinQuote>? = null
+    private val joinCountdown = com.example.displayconnect.routing.RejoinCountdown()
+    private var joinEpoch = 0
+    private var gpxResumeSeed: Int? = null
+    private var joinRetryAfterMs = 0L
+    private var quoteCompletedMs = 0L
+    private var quotedDeparture: Float? = null
+    private val weakJoinCancellation = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var hasJoinedTrack = false
+    private val pendingJoinSelection = java.util.concurrent.atomic.AtomicInteger(-1)
+    private var autoSelection = false
+    private var lastReliableDeparture: Float? = null
     private var lastRawPosition: LatLon? = null
     // Primer enganche de una traza GPX aun no resuelto: si hay ramas ambiguas
     // no se elige en silencio; el usuario elige en la app (selectGpxJoinCandidate).
@@ -181,6 +198,13 @@ class NavigationEngine(
     }
 
     fun stopNavigation() {
+        cancelTimedJoin()
+        hasJoinedTrack = false
+        gpxResumeSeed = null
+        joinRetryAfterMs = 0L
+        quoteCompletedMs = 0L
+        weakJoinCancellation.set(false)
+        pendingJoinSelection.set(-1)
         rerouteJob?.cancel()
         rerouteJob = null
         reroutePolicy.reset()
@@ -225,13 +249,26 @@ class NavigationEngine(
      * ahi. No esta limitada por el tope de 3 conectores automaticos: es una
      * decision del usuario, no un reintento.
      */
-    fun selectGpxJoinCandidate(index: Int) {
-        val candidate = gpxJoinCandidates.getOrNull(index) ?: return
+    fun selectGpxJoinCandidate(index: Int) { pendingJoinSelection.set(index) }
+
+    private fun applyGpxJoinCandidate(index: Int) {
+        val resolved = if (index >= 1_000_000) {
+            val offset = index - (1_000_000 + joinEpoch * 100)
+            if (offset !in gpxJoinCandidates.indices) return
+            offset
+        } else {
+            // Old screen events cannot select a new timed choice by position.
+            if (joinQuoteOrigin != null) return
+            index
+        }
+        val candidate = gpxJoinCandidates.getOrNull(resolved) ?: return
+        cancelTimedJoin()
         // Primer enganche ambiguo estando SOBRE la traza: no hace falta conector
         // (ya esta en la carretera de la ruta); se adjunta la rama elegida.
         if (gpxInitialJoinPending && gpxMode) {
             progressCalculator?.seed(candidate.segmentIndex)
             gpxInitialJoinPending = false
+            hasJoinedTrack = true
             gpxJoinCandidates = emptyList()
             TransmissionHub.updateGpxJoinOptions(emptyList())
             gpxRejoinAmbiguous = false
@@ -256,13 +293,136 @@ class NavigationEngine(
             else TrackRejoin.remainingFrom(track, candidate.segmentIndex, candidate.fraction)
         gpxRejoinTrackRemainingM = restM
         gpxRejoinTrackRemainingS = restS
+        gpxResumeSeed = if (nearStart) 0 else candidate.segmentIndex
         reroutePolicy.requestStarted(SystemClock.elapsedRealtime())
         rerouteFailed = false
         rerouteIsGpxConnector = true
+        val departure = if (autoSelection) lastReliableDeparture else null
         rerouteJob = scope.async(Dispatchers.IO + parent) {
-            routeProvider.fetchRoute(origin, targetPoint, settings.routeProfile, null)
+            rejoinRoute(origin, targetPoint, settings.routeProfile,
+                departure)
         }
         Log.i("DisplayConnectRoute", "GPX rejoin: user picked branch seg=${candidate.segmentIndex} (${candidate.distanceM.toInt()} m, km ${(candidate.progressM / 1000).toInt()}, startSnap=$nearStart)")
+    }
+
+    private fun cancelTimedJoin() {
+        if (joinQuoteOrigin != null) joinEpoch++
+        joinQuotes?.cancel()
+        joinQuotes = null
+        joinQuoteResults = null
+        joinQuoteOrigin = null
+        joinCountdown.cancel()
+        // Keep manual choices but remove an obsolete countdown immediately.
+        TransmissionHub.updateGpxJoinOptions(TransmissionHub.gpxJoinOptions.value.map {
+            it.copy(autoRemainingMs = null, autoFraction = 0f)
+        })
+    }
+
+    private suspend fun updateTimedJoin(
+        track: RouteData, candidates: List<TrackRejoin.JoinCandidate>, origin: LatLon,
+        raw: LocationUpdate, settings: AppSettings, nowMs: Long
+    ) {
+        if (gpxInitialJoinPending || rerouteJob != null) return
+        if (!joinCountdown.eligible(hasJoinedTrack, gpxInitialJoinPending, true,
+                nowMs - raw.elapsedMs, raw.accuracyM)) {
+            gpxJoinCandidates = candidates
+            TransmissionHub.updateGpxJoinOptions(candidates.mapIndexed { i, c ->
+                TransmissionHub.GpxJoinOption(i, c.progressM, c.distanceM, c.bearing, c.progressM < 1000.0)
+            })
+            return
+        }
+        val oldOrigin = joinQuoteOrigin
+        // Candidate order is geometric and can swap with centimetres of GPS noise.
+        // Match each branch to the previous frame by nearby progress, not by its row index.
+        val stable = com.example.displayconnect.routing.RejoinBranches.align(gpxJoinCandidates, candidates)
+        val changed = stable.size != gpxJoinCandidates.size ||
+            stable.zip(gpxJoinCandidates).any { (a, b) ->
+                kotlin.math.abs(a.progressM - b.progressM) > 100.0 ||
+                    GpsFilter.distanceM(a.point, b.point) > 40.0 ||
+                    TrackRejoin.bearingDiff(a.bearing, b.bearing) > 55.0
+            }
+        val headingChanged = quotedDeparture?.let { old ->
+            lastReliableDeparture?.let { TrackRejoin.bearingDiff(old, it) > 55.0 } ?: false
+        } == true
+        if (oldOrigin != null && (changed || headingChanged)) cancelTimedJoin()
+        // Follow a branch smoothly while riding. Network quotes retain their own immutable targets.
+        if (joinQuoteOrigin != null) gpxJoinCandidates = stable
+        val dueNeedsRefresh = joinCountdown.tick(nowMs)?.due == true &&
+            (nowMs - quoteCompletedMs > 2_000 || GpsFilter.distanceM(oldOrigin ?: origin, origin) > 30.0)
+        val refresh = oldOrigin != null && joinQuotes == null && nowMs >= joinRetryAfterMs &&
+            (GpsFilter.distanceM(oldOrigin, origin) > 150.0 || nowMs - quoteCompletedMs >= 10_000 || dueNeedsRefresh)
+        if (joinQuoteOrigin == null || refresh) {
+            if (!refresh) { gpxJoinCandidates = stable; joinEpoch++ }
+            joinQuoteOrigin = origin
+            joinQuoteStartedMs = nowMs
+            val departure = lastReliableDeparture
+            quotedDeparture = departure
+            val snapshot = gpxJoinCandidates.toList()
+            val parent = locationJob ?: return
+            // Public routing service: bounded sequential requests, never one per GPS frame.
+            joinQuotes = scope.async(Dispatchers.IO + parent) {
+                if (candidates.size !in 2..4) return@async candidates.map { JoinQuote(it, null) }
+                try { withTimeout(12_000) {
+                    snapshot.map { c ->
+                        val target = if (c.progressM < 1000.0) track.coordinates.first() else c.point
+                        val road = rejoinRoute(origin, target, settings.routeProfile, departure)
+                            .getOrNull()?.takeIf { q ->
+                                q.coordinates.size >= 2 && q.distanceM.isFinite() && q.distanceM >= 0 &&
+                                    GpsFilter.distanceM(q.coordinates.first(), origin) <= 30.0 &&
+                                    GpsFilter.distanceM(q.coordinates.last(), target) <= 30.0
+                            }
+                        JoinQuote(c, road)
+                    }
+                } } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+                    candidates.map { JoinQuote(it, null) }
+                }
+            }
+        }
+        val pending = joinQuotes
+        if (pending != null && pending.isCompleted) {
+            joinQuotes = null
+            joinQuoteResults = try { pending.await() }
+                catch (e: kotlinx.coroutines.TimeoutCancellationException) { gpxJoinCandidates.map { JoinQuote(it, null) } }
+            quoteCompletedMs = nowMs
+            val quotes = joinQuoteResults.orEmpty()
+            joinRetryAfterMs = if (quotes.any { it.road == null }) nowMs + 30_000 else nowMs
+            val winner = joinCountdown.winner(quotes.mapIndexed { i, q ->
+                com.example.displayconnect.routing.RejoinCountdown.Quote(i, q.road?.distanceM,
+                    lastReliableDeparture?.let { TrackRejoin.bearingDiff(it, q.candidate.bearing) <= 55.0 } == true)
+            })
+            if (winner == null) joinCountdown.cancel()
+            else if (joinCountdown.tick(nowMs)?.id != winner) joinCountdown.start(winner, nowMs)
+        }
+        // Losing reliable direction during a tie invalidates its winner.
+        val results = joinQuoteResults
+        if (results != null) {
+            val winner = joinCountdown.winner(results.mapIndexed { i, q ->
+                com.example.displayconnect.routing.RejoinCountdown.Quote(i, q.road?.distanceM,
+                    lastReliableDeparture?.let { TrackRejoin.bearingDiff(it, q.candidate.bearing) <= 55.0 } == true)
+            })
+            if (joinCountdown.tick(nowMs)?.id != winner) joinCountdown.cancel()
+        }
+        val tick = joinCountdown.tick(nowMs)
+        TransmissionHub.updateGpxJoinOptions(gpxJoinCandidates.mapIndexed { i, c ->
+            TransmissionHub.GpxJoinOption(1_000_000 + joinEpoch * 100 + i,
+                c.progressM, c.distanceM, c.bearing, c.progressM < 1000.0,
+                results?.getOrNull(i)?.road?.distanceM,
+                tick?.takeIf { it.id == i }?.remainingMs,
+                tick?.takeIf { it.id == i }?.fraction ?: 0f,
+                if (pending != null && !pending.isCompleted) "Calculando acceso..."
+                else if (tick == null) "Elección manual: acceso incompleto o empate" else null)
+        })
+        if (tick?.due == true && joinQuotes == null &&
+            nowMs - quoteCompletedMs <= 15_000 &&
+            GpsFilter.distanceM(joinQuoteOrigin ?: origin, origin) <= 250.0 &&
+            pendingJoinSelection.get() < 0 && nowMs - raw.elapsedMs in 0..3000 && raw.accuracyM in 0f..25f) {
+            // Compare fresh quotes first, then fetch the chosen connector from the current fix.
+            // Use the exact target that was compared, not a newer nearby projection.
+            gpxJoinCandidates = results!!.map { it.candidate }
+            autoSelection = true
+            try { applyGpxJoinCandidate(1_000_000 + joinEpoch * 100 + tick.id) }
+            finally { autoSelection = false }
+        }
     }
 
     private fun acceptUpdate(update: LocationUpdate): Boolean {
@@ -277,6 +437,10 @@ class NavigationEngine(
     }
 
     private fun sendWeakGpsFrame() {
+        weakJoinCancellation.set(true)
+        TransmissionHub.updateGpxJoinOptions(TransmissionHub.gpxJoinOptions.value.map {
+            it.copy(autoRemainingMs = null, autoFraction = 0f)
+        })
         altitudeEstimator.reset()
         val previous = lastMessage ?: return
         if (previous.gpsWeak) return
@@ -285,6 +449,7 @@ class NavigationEngine(
 
     private suspend fun publishUpdate(raw: LocationUpdate, settings: AppSettings) = withContext(Dispatchers.Default) {
         currentCoroutineContext().ensureActive()
+        if (weakJoinCancellation.getAndSet(false)) { cancelTimedJoin(); pendingJoinSelection.set(-1) }
         val buildStarted = SystemClock.elapsedRealtime()
         var currentRoute = route ?: return@withContext
         val rawPosition = LatLon(raw.lat, raw.lon)
@@ -296,6 +461,8 @@ class NavigationEngine(
         val reliableBearing = raw.bearing.takeIf {
             fresh && it.isFinite() && raw.speedMps >= 2.5f && raw.accuracyM <= 30f
         }
+        lastReliableDeparture = com.example.displayconnect.routing.ForwardReroute.reliableBearing(
+            raw.bearing, raw.speedMps, raw.accuracyM)
         var progress = progressCalculator?.update(rawPosition, reliableBearing)
             ?: com.example.displayconnect.routing.TripProgress()
         // Primer enganche de una traza GPX: si varias ramas estan a tiro de GPS
@@ -320,6 +487,7 @@ class NavigationEngine(
                 unique != null -> {
                     if (attachCandidates.size > 1) progressCalculator?.seed(unique.segmentIndex)
                     gpxInitialJoinPending = false
+                    hasJoinedTrack = true
                     progress = progressCalculator?.update(rawPosition, reliableBearing) ?: progress
                 }
                 else -> {
@@ -333,7 +501,20 @@ class NavigationEngine(
                 }
             }
         }
+        if (gpxMode && !gpxRejoinActive && !gpxInitialJoinPending && fresh &&
+            !progress.offRoute && (progress.distanceFromRouteM ?: Double.MAX_VALUE) <= 30.0)
+            hasJoinedTrack = true
+        val requested = pendingJoinSelection.getAndSet(-1)
+        if (requested >= 0) applyGpxJoinCandidate(requested)
         val away = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
+        if (!away || !fresh || raw.accuracyM !in 0f..25f) {
+            cancelTimedJoin()
+            if (!away && !gpxInitialJoinPending) {
+                gpxJoinCandidates = emptyList()
+                gpxRejoinAmbiguous = false
+                TransmissionHub.updateGpxJoinOptions(emptyList())
+            }
+        }
         // A completed network request never writes shared route state itself.
         // Install only here, serially with GPS frames and only if still off the old route.
         val pending = rerouteJob
@@ -391,6 +572,8 @@ class NavigationEngine(
             if (gpxRejoinStrikes >= 2 && track != null) {
                 route = track
                 val calculator = RouteProgressCalculator(track)
+                gpxResumeSeed?.let { calculator.seed(it) }
+                gpxResumeSeed = null
                 progressCalculator = calculator
                 currentRoute = track
                 gpxRejoinActive = false
@@ -398,6 +581,7 @@ class NavigationEngine(
                 gpxTrack = null
                 gpxRejoinAttempts = 0
                 gpxRejoinAmbiguous = false
+                cancelTimedJoin()
                 gpxJoinCandidates = emptyList()
                 TransmissionHub.updateGpxJoinOptions(emptyList())
                 gpxRejoinTrackRemainingM = 0.0
@@ -407,6 +591,13 @@ class NavigationEngine(
                 retryOfflineDownload()
                 Log.i("DisplayConnectRoute", "GPX rejoin: track resumed")
             }
+        }
+        if (away && joinQuoteOrigin != null && rerouteJob == null && !gpxInitialJoinPending) {
+            val track = (if (gpxRejoinActive) gpxTrack else currentRoute)
+            if (track != null) updateTimedJoin(track,
+                TrackRejoin.nearestJoinCandidates(track.coordinates, rawPosition,
+                    maxOf(15.0, raw.accuracyM.toDouble() * 2)),
+                rawPosition, raw, settings, nowMs)
         }
         val confirmed = reroutePolicy.observe(progress.distanceFromRouteM, raw.accuracyM,
             raw.elapsedMs, nowMs)
@@ -444,6 +635,7 @@ class NavigationEngine(
                 val chosen = when {
                     candidates.isEmpty() -> null
                     candidates.size == 1 -> candidates[0]
+                    joinQuoteOrigin != null -> null
                     else -> reliableBearing?.let { heading ->
                         candidates.filter { TrackRejoin.bearingDiff(heading, it.bearing) <= 55.0 }
                             .singleOrNull()
@@ -451,21 +643,14 @@ class NavigationEngine(
                 }
                 gpxRejoinAmbiguous = chosen == null && candidates.size > 1
                 if (gpxRejoinAmbiguous) {
-                    gpxJoinCandidates = candidates
-                    TransmissionHub.updateGpxJoinOptions(candidates.mapIndexed { i, c ->
-                        TransmissionHub.GpxJoinOption(
-                            index = i,
-                            progressM = c.progressM,
-                            distanceM = c.distanceM,
-                            bearing = c.bearing,
-                            isRouteStart = c.progressM < 1000.0
-                        )
-                    })
+                    updateTimedJoin(track, candidates, rawPosition, raw, settings, nowMs)
                 } else {
+                    cancelTimedJoin()
                     gpxJoinCandidates = emptyList()
                     TransmissionHub.updateGpxJoinOptions(emptyList())
                 }
                 if (chosen != null) {
+                    gpxResumeSeed = chosen.segmentIndex
                     val (restM, restS) = TrackRejoin.remainingFrom(track, chosen.segmentIndex, chosen.fraction)
                     gpxRejoinTrackRemainingM = restM
                     gpxRejoinTrackRemainingS = restS
