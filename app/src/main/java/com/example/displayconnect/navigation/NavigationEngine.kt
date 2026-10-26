@@ -66,6 +66,13 @@ class NavigationEngine(
     private var gpxRejoinTrackRemainingS = 0.0
     private var gpxRejoinAttempts = 0
     private var gpxRejoinAmbiguous = false
+    // Candidatos de enganche publicados mientras la traza es ambigua: la app
+    // los muestra y el usuario elige expresamente; nunca se infiere por cercania.
+    private var gpxJoinCandidates: List<TrackRejoin.JoinCandidate> = emptyList()
+    private var lastRawPosition: LatLon? = null
+    // Primer enganche de una traza GPX aun no resuelto: si hay ramas ambiguas
+    // no se elige en silencio; el usuario elige en la app (selectGpxJoinCandidate).
+    private var gpxInitialJoinPending = false
     private var gpxMode = false
     private var activeSettings: AppSettings? = null
     private var gpsFilter: GpsFilter? = null
@@ -90,6 +97,7 @@ class NavigationEngine(
         TransmissionHub.clearNavigationError()
         destination = dest
         gpxMode = prepared != null
+        gpxInitialJoinPending = prepared != null
         TransmissionHub.setNavigating(true)
         locationJob = scope.launch {
             try {
@@ -192,6 +200,10 @@ class NavigationEngine(
         gpxRejoinTrackRemainingS = 0.0
         gpxRejoinAttempts = 0
         gpxRejoinAmbiguous = false
+        gpxJoinCandidates = emptyList()
+        gpxInitialJoinPending = false
+        lastRawPosition = null
+        TransmissionHub.updateGpxJoinOptions(emptyList())
         route = null
         progressCalculator = null
         destination = null
@@ -199,6 +211,54 @@ class NavigationEngine(
         TransmissionHub.setNavigating(false)
         statsTracker.reset()
         speedLimitMatcher.reset()
+    }
+
+    /**
+     * Eleccion EXPRESA del usuario entre las ramas de enganche publicadas en la
+     * app ("Ruta ambigua"). Hasta que el usuario elige no hay conector alguno;
+     * al elegir se pide la ruta de acceso por carretera a ESA rama (la misma
+     * guia de acceso que el conector automatico) y la traza continuara desde
+     * ahi. No esta limitada por el tope de 3 conectores automaticos: es una
+     * decision del usuario, no un reintento.
+     */
+    fun selectGpxJoinCandidate(index: Int) {
+        val candidate = gpxJoinCandidates.getOrNull(index) ?: return
+        // Primer enganche ambiguo estando SOBRE la traza: no hace falta conector
+        // (ya esta en la carretera de la ruta); se adjunta la rama elegida.
+        if (gpxInitialJoinPending && gpxMode) {
+            progressCalculator?.seed(candidate.segmentIndex)
+            gpxInitialJoinPending = false
+            gpxJoinCandidates = emptyList()
+            TransmissionHub.updateGpxJoinOptions(emptyList())
+            gpxRejoinAmbiguous = false
+            Log.i("DisplayConnectRoute", "GPX initial join: user picked branch seg=${candidate.segmentIndex} (km ${(candidate.progressM / 1000).toInt()})")
+            return
+        }
+        val track = (if (gpxRejoinActive) gpxTrack else route) ?: return
+        val origin = lastRawPosition ?: return
+        val settings = activeSettings ?: return
+        val parent = locationJob ?: return
+        if (rerouteJob != null) return
+        gpxJoinCandidates = emptyList()
+        TransmissionHub.updateGpxJoinOptions(emptyList())
+        gpxRejoinAmbiguous = false
+        // "Empezar desde el inicio" es literal: si la rama elegida esta en el
+        // primer km de traza, el conector va al PUNTO inicial exacto (km 0) y
+        // la traza entera queda por delante; no a una proyeccion a 900 m que
+        // prometeria un inicio que no es.
+        val nearStart = candidate.progressM < 1000.0
+        val targetPoint = if (nearStart) track.coordinates.first() else candidate.point
+        val (restM, restS) = if (nearStart) TrackRejoin.remainingFrom(track, 0, 0.0)
+            else TrackRejoin.remainingFrom(track, candidate.segmentIndex, candidate.fraction)
+        gpxRejoinTrackRemainingM = restM
+        gpxRejoinTrackRemainingS = restS
+        reroutePolicy.requestStarted(SystemClock.elapsedRealtime())
+        rerouteFailed = false
+        rerouteIsGpxConnector = true
+        rerouteJob = scope.async(Dispatchers.IO + parent) {
+            routeProvider.fetchRoute(origin, targetPoint, settings.routeProfile, null)
+        }
+        Log.i("DisplayConnectRoute", "GPX rejoin: user picked branch seg=${candidate.segmentIndex} (${candidate.distanceM.toInt()} m, km ${(candidate.progressM / 1000).toInt()}, startSnap=$nearStart)")
     }
 
     private fun acceptUpdate(update: LocationUpdate): Boolean {
@@ -223,6 +283,7 @@ class NavigationEngine(
         val buildStarted = SystemClock.elapsedRealtime()
         var currentRoute = route ?: return@withContext
         val rawPosition = LatLon(raw.lat, raw.lon)
+        lastRawPosition = rawPosition
         val nowMs = SystemClock.elapsedRealtime()
         val fresh = nowMs - raw.elapsedMs in 0..3000
         // Rumbo fiable solo en movimiento y con fix razonable: se usa para
@@ -232,6 +293,41 @@ class NavigationEngine(
         }
         var progress = progressCalculator?.update(rawPosition, reliableBearing)
             ?: com.example.displayconnect.routing.TripProgress()
+        // Primer enganche de una traza GPX: si varias ramas estan a tiro de GPS
+        // y el rumbo no distingue una sola, NO se elige en silencio (ni la mas
+        // cercana ni el inicio): se publican las ramas y el usuario elige en la
+        // app; el progreso queda suprimido hasta entonces. Si no esta sobre la
+        // traza, lo gestiona el reenganche normal (con las mismas opciones).
+        if (gpxInitialJoinPending && gpxMode && fresh && raw.accuracyM in 0f..40f) {
+            val margin = maxOf(15.0, raw.accuracyM.toDouble() * 2)
+            val attachCandidates = TrackRejoin.nearestJoinCandidates(currentRoute.coordinates, rawPosition, margin)
+            val onTrack = attachCandidates.isNotEmpty() &&
+                attachCandidates[0].distanceM <= maxOf(30.0, raw.accuracyM.toDouble() * 2)
+            val unique = when {
+                !onTrack -> null
+                attachCandidates.size == 1 -> attachCandidates[0]
+                else -> reliableBearing?.let { heading ->
+                    attachCandidates.filter { TrackRejoin.bearingDiff(heading, it.bearing) <= 55.0 }.singleOrNull()
+                }
+            }
+            when {
+                !onTrack -> gpxInitialJoinPending = false
+                unique != null -> {
+                    if (attachCandidates.size > 1) progressCalculator?.seed(unique.segmentIndex)
+                    gpxInitialJoinPending = false
+                    progress = progressCalculator?.update(rawPosition, reliableBearing) ?: progress
+                }
+                else -> {
+                    gpxJoinCandidates = attachCandidates
+                    gpxRejoinAmbiguous = true
+                    TransmissionHub.updateGpxJoinOptions(attachCandidates.mapIndexed { i, c ->
+                        TransmissionHub.GpxJoinOption(i, c.progressM, c.distanceM, c.bearing, c.progressM < 1000.0)
+                    })
+                    progress = progress.copy(offRoute = true, remainingDistanceM = null, remainingDurationS = null)
+                    Log.i("DisplayConnectRoute", "GPX initial join: ambiguous (${attachCandidates.size} branches), waiting for user pick")
+                }
+            }
+        }
         val away = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         // A completed network request never writes shared route state itself.
         // Install only here, serially with GPS frames and only if still off the old route.
@@ -297,6 +393,8 @@ class NavigationEngine(
                 gpxTrack = null
                 gpxRejoinAttempts = 0
                 gpxRejoinAmbiguous = false
+                gpxJoinCandidates = emptyList()
+                TransmissionHub.updateGpxJoinOptions(emptyList())
                 gpxRejoinTrackRemainingM = 0.0
                 gpxRejoinTrackRemainingS = 0.0
                 reroutePolicy.clearEvidence()
@@ -328,7 +426,8 @@ class NavigationEngine(
             // en segmento), nunca reruta al destino. Ramas coincidentes (ida/vuelta
             // o cierre circular) solo se resuelven si el rumbo fiable distingue
             // UNA sola; si no distingue, NO se elige indice menor ni nada parecido:
-            // es ambiguo, no hay ruta automatica y se dice expresamente. Al
+            // es ambiguo, no hay ruta automatica: se dice expresamente y la app
+            // ofrece las ramas para que el usuario elija (nunca por cercania). Al
             // enganchar, la traza continua desde ese punto (por delante o por
             // detras, sin monotonia). Tope de 3 conectores sin enganche por
             // sesion: despues se queda en "Fuera de ruta" hasta que se acerque
@@ -346,6 +445,21 @@ class NavigationEngine(
                     }
                 }
                 gpxRejoinAmbiguous = chosen == null && candidates.size > 1
+                if (gpxRejoinAmbiguous) {
+                    gpxJoinCandidates = candidates
+                    TransmissionHub.updateGpxJoinOptions(candidates.mapIndexed { i, c ->
+                        TransmissionHub.GpxJoinOption(
+                            index = i,
+                            progressM = c.progressM,
+                            distanceM = c.distanceM,
+                            bearing = c.bearing,
+                            isRouteStart = c.progressM < 1000.0
+                        )
+                    })
+                } else {
+                    gpxJoinCandidates = emptyList()
+                    TransmissionHub.updateGpxJoinOptions(emptyList())
+                }
                 if (chosen != null) {
                     val (restM, restS) = TrackRejoin.remainingFrom(track, chosen.segmentIndex, chosen.fraction)
                     gpxRejoinTrackRemainingM = restM
@@ -366,20 +480,22 @@ class NavigationEngine(
                 }
             } else {
                 gpxRejoinAmbiguous = false
+                gpxJoinCandidates = emptyList()
+                TransmissionHub.updateGpxJoinOptions(emptyList())
             }
         }
         val deviated = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         if (deviated) progress = progress.copy(offRoute = true,
             remainingDistanceM = null, remainingDurationS = null)
-        val rerouteInstruction = if (deviated) when (AppLanguage.language.value) {
+        val rerouteInstruction = if (deviated || gpxRejoinAmbiguous) when (AppLanguage.language.value) {
             "es" -> if (rerouteJob != null) "Recalculando ruta..." else if (gpxRejoinAmbiguous)
-                "Ruta ambigua - sin recalculo automatico" else if (rerouteFailed)
+                "Ruta ambigua - elige en la app" else if (rerouteFailed)
                 "Sin ruta nueva - revisa la app" else "Fuera de ruta"
             "en" -> if (rerouteJob != null) "Recalculating route..." else if (gpxRejoinAmbiguous)
-                "Ambiguous track - no auto reroute" else if (rerouteFailed)
+                "Ambiguous track - pick a branch in the app" else if (rerouteFailed)
                 "No new route - check the app" else "Off route"
             else -> if (rerouteJob != null) "Recalculando rota..." else if (gpxRejoinAmbiguous)
-                "Rota ambigua - sem recalculo automatico" else if (rerouteFailed)
+                "Rota ambigua - escolha no app" else if (rerouteFailed)
                 "Sem nova rota - confira o app" else "Fora da rota"
         } else null
         val position = GpsFilter.displayPosition(LatLon(raw.lat, raw.lon), progress.matchedPosition,
