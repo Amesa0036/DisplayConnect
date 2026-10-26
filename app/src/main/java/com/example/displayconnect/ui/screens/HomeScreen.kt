@@ -119,6 +119,7 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val tripProgress by viewModel.tripProgress.collectAsState()
+    val gpxJoinOptions by viewModel.gpxJoinOptions.collectAsState()
     val liveNav by TransmissionHub.liveNav.collectAsState()
     val view = LocalView.current
     DisposableEffect(uiState.isNavigating) {
@@ -192,7 +193,9 @@ fun HomeScreen(
                     nav = liveNav,
                     trip = tripProgress,
                     destLabel = uiState.destLabel,
-                    onStop = { viewModel.stopNavigation() }
+                    onStop = { viewModel.stopNavigation() },
+                    joinOptions = gpxJoinOptions,
+                    onSelectJoin = { viewModel.selectGpxJoinCandidate(it) }
                 )
             } else {
                 // ---------- Buscar destino ----------
