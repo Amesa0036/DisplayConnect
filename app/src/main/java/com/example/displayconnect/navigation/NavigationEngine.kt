@@ -56,6 +56,9 @@ class NavigationEngine(
     private var downloadJob: Job? = null
     private var rerouteJob: Deferred<Result<RouteData>>? = null
     private val reroutePolicy = ReroutePolicy()
+    private val altitudeEstimator = AltitudeEstimator()
+    private val altitudeFilter get() = altitudeEstimator.filter
+    var altitudeMonitor: AltitudeMonitor? = null
     private var rerouteFailed = false
     // Reincorporacion GPX: traza original apartada mientras sigue un conector.
     private var gpxTrack: RouteData? = null
@@ -210,6 +213,7 @@ class NavigationEngine(
         activeSettings = null
         TransmissionHub.setNavigating(false)
         statsTracker.reset()
+        altitudeEstimator.reset()
         speedLimitMatcher.reset()
     }
 
@@ -273,9 +277,10 @@ class NavigationEngine(
     }
 
     private fun sendWeakGpsFrame() {
+        altitudeEstimator.reset()
         val previous = lastMessage ?: return
         if (previous.gpsWeak) return
-        previous.copy(gpsWeak = true, speedKmh = null, speedLimitKmh = null, speedLimitState = "gps_weak").also { lastMessage = it; navClient.sendNavMessage(it.toJson()) }
+        previous.copy(altitudeWgs84M = null, altitudeAccuracyM = null, gpsWeak = true, speedKmh = null, speedLimitKmh = null, speedLimitState = "gps_weak").also { lastMessage = it; navClient.sendNavMessage(it.toJson()) }
     }
 
     private suspend fun publishUpdate(raw: LocationUpdate, settings: AppSettings) = withContext(Dispatchers.Default) {
@@ -556,6 +561,13 @@ class NavigationEngine(
             computeBearingFromRoute(update, simplified)
         }
 
+        val pressure=altitudeMonitor?.state?.value
+        val reading=altitudeEstimator.update(raw.altitudeMslM,raw.altitudeWgs84M,
+            if(raw.altitudeMslM!=null) raw.altitudeMslAccuracyM else raw.altitudeAccuracyM,
+            pressure?.pressureHpa,pressure?.ready==true && nowMs-(pressure.pressureMs) in 0..3000,
+            nowMs,raw.elapsedMs,pressure?.pressureMessage ?: "Sin barometro; usando GPS aprox.")
+        altitudeMonitor?.publish(reading)
+        val altitude=altitudeFilter.update(reading.metres,reading.accuracy,raw.elapsedMs,nowMs)
         val message = NavMessage(
             lat = update.lat,
             lon = update.lon,
@@ -579,7 +591,10 @@ class NavigationEngine(
             maneuverExit = step?.maneuverExit,
             speedKmh = speedKmh,
             speedLimitKmh = limit.kmh,
-            speedLimitState = limit.state
+            speedLimitState = limit.state,
+            altitudeWgs84M = altitude,
+            altitudeReference = reading.reference, altitudeSource = reading.source,
+            altitudeAccuracyM = if (altitude != null) reading.accuracy?.let { kotlin.math.ceil(it.toDouble()).toInt() } else null
         )
 
         val json = message.toJson()
