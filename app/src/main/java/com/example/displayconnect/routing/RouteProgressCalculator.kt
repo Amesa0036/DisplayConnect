@@ -74,6 +74,15 @@ class RouteProgressCalculator(private val route: RouteData) {
         val all = 0 until points.lastIndex
         val previous = lastSegment
         var found = match(if (previous == null) all else max(0, previous - 3)..min(points.lastIndex - 1, previous + 40))
+        // Histeresis de rama: con ramas que se solapan (ida/vuelta, cierre
+        // circular) la mas cercana puede alternar por ruido GPS. La rama actual
+        // se mantiene mientras este a +15 m de la mejor de la ventana: la
+        // eleccion explicita del usuario (seed) no se deshace por 1-2 m de
+        // ruido, y el parpadeo general de ramas desaparece.
+        if (previous != null && previous in 0 until points.lastIndex) {
+            val prevMatch = segmentDistance(previous, location)
+            if (prevMatch.distance <= found.distance + BRANCH_HYSTERESIS_M) found = prevMatch
+        }
         if (found.distance > 30 && previous != null) found = match(all)
         if (bearing != null && found.distance <= 80) {
             val diff = bearingDiff(bearing, segmentBearing(found.index))
@@ -98,6 +107,16 @@ class RouteProgressCalculator(private val route: RouteData) {
             if (route.durationS > 0) ceil(remainingS).toInt().coerceAtLeast(0) else null,
             matchedPosition = matched, distanceFromRouteM = found.distance, routeBearing = direction
         )
+    }
+
+    /**
+     * Siembra el segmento tras la eleccion EXPRESA del usuario en el primer
+     * enganche ambiguo de una traza (ida/vuelta o cierre circular): la ventana
+     * de continuidad parte de la rama elegida. Nunca la invoca el propio
+     * calculador; solo el motor tras la seleccion en la app.
+     */
+    fun seed(segmentIndex: Int) {
+        lastSegment = segmentIndex.coerceIn(0, (points.size - 2).coerceAtLeast(0))
     }
 
     private fun weights(annotations: List<Double>, total: Double, fallback: List<Double>): List<Double> {
@@ -127,5 +146,8 @@ class RouteProgressCalculator(private val route: RouteData) {
     }
 
     private data class Match(val index: Int, val fraction: Double, val distance: Double)
-    private companion object { const val EARTH_RADIUS = 6_371_000.0 }
+    private companion object {
+        const val EARTH_RADIUS = 6_371_000.0
+        const val BRANCH_HYSTERESIS_M = 15.0
+    }
 }
