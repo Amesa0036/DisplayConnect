@@ -62,6 +62,14 @@ fun MainScreen(
     viewModel: MainViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val altitudeStatus by viewModel.altitudeStatus.collectAsState()
+    androidx.compose.runtime.DisposableEffect(viewModel) {
+        viewModel.altitudeMonitor.start()
+        onDispose { viewModel.altitudeMonitor.stop() }
+    }
+    val boardInfo by viewModel.boardInfo.collectAsState()
+    val boardBusy by viewModel.boardBusy.collectAsState()
+    val boardMessage by viewModel.boardMessage.collectAsState()
     val tripProgress by viewModel.tripProgress.collectAsState()
     val offlineMap by viewModel.offlineMap.collectAsState()
     val gps by viewModel.gps.collectAsState()
@@ -190,6 +198,13 @@ fun MainScreen(
                     Text(stringResource(R.string.disconnect))
                 }
             }
+
+            com.example.displayconnect.ui.components.AltitudeStatusCard(altitudeStatus)
+
+            if (isConnected) com.example.displayconnect.ui.components.BoardSettingsCard(
+                info = boardInfo, busy = boardBusy, navigating = uiState.isNavigating,
+                message = boardMessage, onIdentify = viewModel::identifyBoard,
+                onRename = viewModel::renameBoard, onRefresh = viewModel::refreshBoardInfo)
 
             Text(
                 text = stringResource(R.string.navigation_section),
