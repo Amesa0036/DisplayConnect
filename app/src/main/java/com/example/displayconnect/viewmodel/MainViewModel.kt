@@ -5,7 +5,9 @@ import android.app.Application
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -15,8 +17,12 @@ import com.example.displayconnect.maps.MapsBrowserActivity
 import com.example.displayconnect.models.MainUiState
 import com.example.displayconnect.navigation.NavigationForegroundService
 import com.example.displayconnect.network.BleDeviceItem
+import com.example.displayconnect.routing.GpxRouteBuilder
+import com.example.displayconnect.routing.GpxParser
 import com.example.displayconnect.routing.NominatimGeocoder
+import com.example.displayconnect.routing.PendingRouteHolder
 import com.example.displayconnect.routing.PlaceSearchResult
+import com.example.displayconnect.routing.RouteData
 import com.example.displayconnect.routing.RouteProfile
 import com.example.displayconnect.utils.TransmissionHub
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,8 +31,10 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -42,7 +50,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun retryOfflineDownload() = NavigationForegroundService.retryDownload(getApplication())
 
     private var pendingMapsBrowser = false
+    private var pendingGpxStart = false
     private var pendingBleAction: (() -> Unit)? = null
+
+    private val gpxBuilder = GpxRouteBuilder()
+    private var gpxTrack: GpxParser.GpxTrack? = null
+    private var gpxRoute: RouteData? = null
+    private var gpxJob: Job? = null
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -91,7 +105,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         searchResults = current.searchResults,
                         isSearching = current.isSearching,
                         searchCity = current.searchCity,
-                        errorMessage = current.errorMessage
+                        errorMessage = current.errorMessage,
+                        gpxStatus = current.gpxStatus,
+                        gpxName = current.gpxName,
+                        gpxInfo = current.gpxInfo,
+                        gpxProgress = current.gpxProgress,
+                        gpxArrowsComplete = current.gpxArrowsComplete
                     )
                 }
             }
@@ -301,6 +320,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onLocationPermissionGranted() {
+        if (pendingGpxStart) {
+            pendingGpxStart = false
+            startGpxNavigation { }
+            return
+        }
         if (!hasPreciseLocationPermission()) {
             _uiState.update { it.copy(errorMessage = com.example.displayconnect.utils.AppLanguage.context(getApplication()).getString(R.string.error_precise_location)) }
             return
@@ -370,6 +394,117 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             hasLocationPermission()
         }
+    }
+
+    // ---------- Importacion GPX ----------
+
+    fun onGpxFileSelected(uri: Uri) {
+        viewModelScope.launch {
+            val appCtx = getApplication<Application>()
+            val (text, fileName) = withContext(Dispatchers.IO) {
+                val name = queryDisplayName(appCtx, uri)
+                val content = appCtx.contentResolver.openInputStream(uri)
+                    ?.bufferedReader()?.use { it.readText() }
+                (content ?: "") to name
+            }
+            if (text.isBlank()) {
+                _uiState.update { it.copy(gpxStatus = "error", errorMessage = "No se pudo leer el archivo GPX") }
+                return@launch
+            }
+            try {
+                val track = GpxParser.parse(text, fileName)
+                if (track.points.size < 2) {
+                    _uiState.update { it.copy(gpxStatus = "error", errorMessage = "Ese GPX no tiene puntos de ruta") }
+                    return@launch
+                }
+                gpxTrack = track
+                gpxRoute = null
+                _uiState.update {
+                    it.copy(
+                        gpxStatus = "loaded",
+                        gpxName = track.name,
+                        gpxInfo = "${GpxParser.formatKm(track.distanceM)} km · ${track.points.size} puntos",
+                        gpxProgress = "",
+                        gpxArrowsComplete = true
+                    )
+                }
+            } catch (e: Exception) {
+                _uiState.update { it.copy(gpxStatus = "error", errorMessage = "Ese archivo no es un GPX valido") }
+            }
+        }
+    }
+
+    fun prepareGpxRoute() {
+        val track = gpxTrack ?: return
+        gpxJob?.cancel()
+        gpxJob = viewModelScope.launch {
+            _uiState.update { it.copy(gpxStatus = "preparing", gpxProgress = "") }
+            try {
+                val outcome = gpxBuilder.build(track.points, _uiState.value.routeProfile) { done, total ->
+                    _uiState.update { s -> s.copy(gpxProgress = "$done/$total") }
+                }
+                ensureActive()
+                gpxRoute = outcome.route
+                _uiState.update {
+                    it.copy(
+                        gpxStatus = "ready",
+                        gpxInfo = "${GpxParser.formatKm(outcome.route.distanceM)} km · ${outcome.route.steps.size} indicaciones",
+                        gpxProgress = "",
+                        gpxArrowsComplete = outcome.arrowsComplete
+                    )
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(gpxStatus = "loaded", gpxProgress = "",
+                        errorMessage = "No se pudo preparar la ruta. Revisa internet e intentalo de nuevo.")
+                }
+            }
+        }
+    }
+
+    fun startGpxNavigation(onNeedLocationPermission: () -> Unit) {
+        val route = gpxRoute ?: return
+        if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
+            _uiState.update {
+                it.copy(errorMessage = com.example.displayconnect.utils.AppLanguage.context(getApplication()).getString(R.string.error_not_connected))
+            }
+            return
+        }
+        if (!hasLocationPermission()) {
+            pendingGpxStart = true
+            onNeedLocationPermission()
+            return
+        }
+        val name = gpxTrack?.name ?: "Ruta GPX"
+        PendingRouteHolder.put(route, name)
+        val last = route.coordinates.last()
+        viewModelScope.launch {
+            settingsRepository.updateSettings {
+                it.copy(destLabel = name, destLat = last.lat.toString(), destLon = last.lon.toString())
+            }
+        }
+        NavigationForegroundService.startPreparedRoute(getApplication())
+    }
+
+    fun clearGpx() {
+        gpxJob?.cancel()
+        gpxTrack = null
+        gpxRoute = null
+        PendingRouteHolder.clear()
+        _uiState.update {
+            it.copy(gpxStatus = "none", gpxName = "", gpxInfo = "", gpxProgress = "", gpxArrowsComplete = true)
+        }
+    }
+
+    private fun queryDisplayName(context: Context, uri: Uri): String {
+        return runCatching {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { cursor ->
+                    if (cursor.moveToFirst()) cursor.getString(0) ?: "" else ""
+                } ?: ""
+        }.getOrDefault("").ifBlank { "Ruta GPX" }
     }
 
     fun stopNavigation() {
