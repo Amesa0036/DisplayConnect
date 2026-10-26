@@ -39,6 +39,8 @@ class NavigationForegroundService : Service() {
             ACTION_START_ROUTE -> handleStartRoute()
             ACTION_STOP -> stopNavigationService()
             ACTION_RETRY_DOWNLOAD -> navigationEngine?.retryOfflineDownload()
+            ACTION_SELECT_GPX_JOIN ->
+                navigationEngine?.selectGpxJoinCandidate(intent.getIntExtra(EXTRA_JOIN_INDEX, -1))
         }
         return START_STICKY
     }
@@ -163,6 +165,8 @@ class NavigationForegroundService : Service() {
         const val ACTION_START_ROUTE = "com.example.displayconnect.action.START_PREPARED_ROUTE"
         const val ACTION_STOP = "com.example.displayconnect.action.STOP_NAV"
         const val ACTION_RETRY_DOWNLOAD = "com.example.displayconnect.action.RETRY_MAP_DOWNLOAD"
+        const val ACTION_SELECT_GPX_JOIN = "com.example.displayconnect.action.SELECT_GPX_JOIN"
+        const val EXTRA_JOIN_INDEX = "extra_join_index"
         const val EXTRA_DEST_LAT = "extra_dest_lat"
         const val EXTRA_DEST_LON = "extra_dest_lon"
         private const val CHANNEL_ID = "display_connect_nav"
@@ -193,6 +197,14 @@ class NavigationForegroundService : Service() {
 
         fun retryDownload(context: Context) {
             context.startService(Intent(context, NavigationForegroundService::class.java).apply { action = ACTION_RETRY_DOWNLOAD })
+        }
+
+        /** Eleccion expresa del usuario entre las ramas de enganche GPX ambiguas. */
+        fun selectGpxJoin(context: Context, index: Int) {
+            context.startService(Intent(context, NavigationForegroundService::class.java).apply {
+                action = ACTION_SELECT_GPX_JOIN
+                putExtra(EXTRA_JOIN_INDEX, index)
+            })
         }
     }
 }
