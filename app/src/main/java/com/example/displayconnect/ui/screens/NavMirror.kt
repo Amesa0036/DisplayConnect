@@ -4,7 +4,10 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -14,6 +17,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -38,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.displayconnect.protocol.NavMessage
 import com.example.displayconnect.routing.TripProgress
+import com.example.displayconnect.utils.TransmissionHub
 import com.example.displayconnect.ui.theme.Alert
 import com.example.displayconnect.ui.theme.Blue
 import com.example.displayconnect.ui.theme.Outline
@@ -59,7 +64,9 @@ fun NavMirror(
     nav: NavMessage?,
     trip: TripProgress,
     destLabel: String,
-    onStop: () -> Unit
+    onStop: () -> Unit,
+    joinOptions: List<TransmissionHub.GpxJoinOption> = emptyList(),
+    onSelectJoin: (Int) -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -163,6 +170,52 @@ fun NavMirror(
             color = if (warning != null) Warn else Color.White,
             modifier = Modifier.fillMaxWidth()
         )
+
+        // Ramas de enganche cuando la traza es ambigua: el usuario elige
+        // expresamente por cual empezar (nunca se infiere por cercania).
+        if (joinOptions.isNotEmpty()) {
+            // Tope de altura con scroll: con 4+ ramas o pantalla pequeña el
+            // circulo y el boton de parar siguen visibles.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 170.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Elige por dónde empezar:",
+                    fontSize = 14.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                joinOptions.forEach { opt ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainer)
+                            .border(1.dp, Outline, RoundedCornerShape(14.dp))
+                            .clickable { onSelectJoin(opt.index) }
+                            .padding(vertical = 10.dp, horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = if (opt.isRouteStart) "Empezar desde el inicio"
+                                else "Unirme en el km ${"%.1f".format(opt.progressM / 1000)}",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            "a ${opt.distanceM.toInt()} m",
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
 
         // Barra inferior: km, minutos, llegada
         val remM = trip.remainingDistanceM ?: nav?.remainingDistanceM
