@@ -9,7 +9,10 @@ import kotlin.math.hypot
  * Punto de enganche = PROYECCION sobre el segmento mas cercano (decision de
  * producto: "hasta el punto mas cercano para seguir"), con candidatos
  * ambiguos (ramas ida/vuelta coincidentes) desambiguados por rumbo en el
- * motor. Misma aproximacion equirectangular que RouteProgressCalculator.
+ * motor o elegidos expresamente por el usuario en la app. Candidatos que son
+ * el mismo lugar y el mismo progreso (artefacto de trazas densas) se fusionan
+ * por cluster; ramas genuinas a kilometros de progreso nunca se fusionan.
+ * Misma aproximacion equirectangular que RouteProgressCalculator.
  * Funciones puras, sin estado.
  */
 object TrackRejoin {
@@ -19,7 +22,8 @@ object TrackRejoin {
         val fraction: Double,
         val distanceM: Double,
         val point: LatLon,
-        val bearing: Float
+        val bearing: Float,
+        val progressM: Double
     )
 
     /**
@@ -30,6 +34,18 @@ object TrackRejoin {
     fun nearestJoinCandidates(points: List<LatLon>, pos: LatLon, marginM: Double): List<JoinCandidate> {
         if (points.size < 2 || !pos.lat.isFinite() || !pos.lon.isFinite()) return emptyList()
         val cosLat = cos(Math.toRadians(pos.lat))
+        // Progreso acumulado por vertice: necesario para distinguir "mismo punto
+        // de enganche" de "ramas distintas" (ida/vuelta o cierre de ruta estan a
+        // kilometros de progreso aunque coincidan en el mapa).
+        val cum = DoubleArray(points.size)
+        for (i in 0 until points.size - 1) {
+            val a = points[i]
+            val b = points[i + 1]
+            cum[i + 1] = cum[i] + hypot(
+                Math.toRadians(b.lon - a.lon) * EARTH_RADIUS * cos(Math.toRadians((a.lat + b.lat) / 2)),
+                Math.toRadians(b.lat - a.lat) * EARTH_RADIUS
+            )
+        }
         val all = ArrayList<JoinCandidate>(points.size - 1)
         for (i in 0 until points.size - 1) {
             val a = points[i]
@@ -40,34 +56,46 @@ object TrackRejoin {
             val dy = Math.toRadians(b.lat - a.lat) * EARTH_RADIUS
             val lengthSq = dx * dx + dy * dy
             val fraction = if (lengthSq > 0.0) (-(ax * dx + ay * dy) / lengthSq).coerceIn(0.0, 1.0) else 0.0
+            val segLen = cum[i + 1] - cum[i]
             all.add(
                 JoinCandidate(
                     segmentIndex = i,
                     fraction = fraction,
                     distanceM = hypot(ax + fraction * dx, ay + fraction * dy),
                     point = LatLon(a.lat + (b.lat - a.lat) * fraction, a.lon + (b.lon - a.lon) * fraction),
-                    bearing = segmentBearing(a, b)
+                    bearing = segmentBearing(a, b),
+                    progressM = cum[i] + fraction * segLen
                 )
             )
         }
         val best = all.minOf { it.distanceM }
         val near = all.filter { it.distanceM <= best + marginM }.sortedBy { it.distanceM }
-        // Dedupe SOLO del mismo punto de progreso: vertice compartido entre
-        // segmentos adyacentes (uno termina en el, el siguiente empieza). Es el
-        // mismo lugar Y el mismo progreso de traza, asi que no se pierde nada.
-        // Ramas coincidentes NO adyacentes (ida/vuelta, cierre de ruta circular)
-        // se conservan como candidatos distintos: las desambigua el rumbo en el
-        // motor y, sin rumbo, se tratan como ambiguas (sin eleccion silenciosa).
+        // Fusion por clusters: dos candidatos son EL MISMO punto de enganche si
+        // sus puntos proyectados estan muy cerca en el mapa Y en progreso de
+        // traza. Con trazas densas (un punto cada pocos metros), una posicion
+        // fuera de la traza proyecta en los extremos clavados de varios
+        // segmentos consecutivos de la misma curva: sin esta fusion, cada curva
+        // generaba una "ambigüedad" falsa. Las ramas genuinas (ida/vuelta,
+        // cierre circular) estan a kilometros de progreso entre si y NUNCA se
+        // fusionan. Caso residual conocido: un micro-bucle de <100 m de
+        // progreso y <40 m en el mapa se fusionaria (raro en rutas de moto).
         val merged = ArrayList<JoinCandidate>(near.size)
         for (cand in near) {
             val dupIndex = merged.indexOfFirst { e ->
-                kotlin.math.abs(e.segmentIndex - cand.segmentIndex) == 1 &&
-                    ((e.segmentIndex < cand.segmentIndex && e.fraction >= 1.0 - 1e-6 && cand.fraction <= 1e-6) ||
-                     (cand.segmentIndex < e.segmentIndex && cand.fraction >= 1.0 - 1e-6 && e.fraction <= 1e-6))
+                kotlin.math.abs(e.progressM - cand.progressM) <= SAME_JOIN_PROGRESS_M &&
+                    planarDistanceM(e.point, cand.point) <= SAME_JOIN_GEO_M
             }
             if (dupIndex < 0) merged.add(cand)
         }
         return merged
+    }
+
+    private fun planarDistanceM(a: LatLon, b: LatLon): Double {
+        val cosLat = cos(Math.toRadians((a.lat + b.lat) / 2))
+        return hypot(
+            Math.toRadians(a.lon - b.lon) * EARTH_RADIUS * cosLat,
+            Math.toRadians(a.lat - b.lat) * EARTH_RADIUS
+        )
     }
 
     /** Distancia minima a la polilinea (proyeccion por segmentos), en metros. */
@@ -134,4 +162,6 @@ object TrackRejoin {
     }
 
     private const val EARTH_RADIUS = 6_371_000.0
+    private const val SAME_JOIN_GEO_M = 40.0
+    private const val SAME_JOIN_PROGRESS_M = 100.0
 }
