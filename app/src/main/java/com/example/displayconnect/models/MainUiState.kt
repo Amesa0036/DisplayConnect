@@ -20,5 +20,11 @@ data class MainUiState(
     val connectionState: ConnectionState = ConnectionState.DISCONNECTED,
     val isNavigating: Boolean = false,
     val stats: TransmissionStats = TransmissionStats(),
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    // Importacion GPX: none | loaded | preparing | ready | error
+    val gpxStatus: String = "none",
+    val gpxName: String = "",
+    val gpxInfo: String = "",
+    val gpxProgress: String = "",
+    val gpxArrowsComplete: Boolean = true
 )
