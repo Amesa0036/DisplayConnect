@@ -12,6 +12,7 @@ import com.example.displayconnect.routing.OsrmRouteProvider
 import com.example.displayconnect.routing.RouteData
 import com.example.displayconnect.routing.RouteStep
 import com.example.displayconnect.routing.RouteProgressCalculator
+import com.example.displayconnect.routing.TrackRejoin
 import com.example.displayconnect.utils.StatsTracker
 import com.example.displayconnect.utils.TransmissionHub
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +57,15 @@ class NavigationEngine(
     private var rerouteJob: Deferred<Result<RouteData>>? = null
     private val reroutePolicy = ReroutePolicy()
     private var rerouteFailed = false
+    // Reincorporacion GPX: traza original apartada mientras sigue un conector.
+    private var gpxTrack: RouteData? = null
+    private var gpxRejoinActive = false
+    private var gpxRejoinStrikes = 0
+    private var rerouteIsGpxConnector = false
+    private var gpxRejoinTrackRemainingM = 0.0
+    private var gpxRejoinTrackRemainingS = 0.0
+    private var gpxRejoinAttempts = 0
+    private var gpxRejoinAmbiguous = false
     private var gpxMode = false
     private var activeSettings: AppSettings? = null
     private var gpsFilter: GpsFilter? = null
@@ -174,6 +184,14 @@ class NavigationEngine(
         lastMessage = null
         lastAcceptedMs = 0
         gpxMode = false
+        gpxTrack = null
+        gpxRejoinActive = false
+        gpxRejoinStrikes = 0
+        rerouteIsGpxConnector = false
+        gpxRejoinTrackRemainingM = 0.0
+        gpxRejoinTrackRemainingS = 0.0
+        gpxRejoinAttempts = 0
+        gpxRejoinAmbiguous = false
         route = null
         progressCalculator = null
         destination = null
@@ -231,6 +249,12 @@ class NavigationEngine(
             } == true
             if (replacement != null && calculator != null && applicable) {
                 currentCoroutineContext().ensureActive()
+                if (rerouteIsGpxConnector) {
+                    if (!gpxRejoinActive) gpxTrack = currentRoute
+                    gpxRejoinActive = true
+                    gpxRejoinStrikes = 0
+                    gpxRejoinAttempts++
+                }
                 route = replacement
                 progressCalculator = calculator
                 currentRoute = replacement
@@ -252,12 +276,42 @@ class NavigationEngine(
                 Log.w("DisplayConnectRoute", "Reroute failed or no longer near current position")
             }
         }
+        // Reincorporacion GPX: con el conector instalado, se vuelve a la traza
+        // en cuanto el GPS confirma dos frames seguidos a tiro de rueda de ella.
+        if (gpxMode && gpxRejoinActive && fresh) {
+            val track = gpxTrack
+            if (track != null && raw.accuracyM in 0f..40f &&
+                TrackRejoin.distanceToPolyline(track.coordinates, rawPosition) <=
+                    maxOf(30.0, raw.accuracyM.toDouble() * 2)) {
+                gpxRejoinStrikes++
+            } else {
+                gpxRejoinStrikes = 0
+            }
+            if (gpxRejoinStrikes >= 2 && track != null) {
+                route = track
+                val calculator = RouteProgressCalculator(track)
+                progressCalculator = calculator
+                currentRoute = track
+                gpxRejoinActive = false
+                gpxRejoinStrikes = 0
+                gpxTrack = null
+                gpxRejoinAttempts = 0
+                gpxRejoinAmbiguous = false
+                gpxRejoinTrackRemainingM = 0.0
+                gpxRejoinTrackRemainingS = 0.0
+                reroutePolicy.clearEvidence()
+                progress = calculator.update(rawPosition, reliableBearing)
+                retryOfflineDownload()
+                Log.i("DisplayConnectRoute", "GPX rejoin: track resumed")
+            }
+        }
         val confirmed = reroutePolicy.observe(progress.distanceFromRouteM, raw.accuracyM,
             raw.elapsedMs, nowMs)
         if (!gpxMode && rerouteJob == null && confirmed) {
             destination?.let { dest ->
                 reroutePolicy.requestStarted(nowMs)
                 rerouteFailed = false
+                rerouteIsGpxConnector = false
                 // Child of the whole navigation, not of this frame: BLE continues while waiting.
                 // Cancellation cannot install a response into a later trip.
                 currentCoroutineContext().ensureActive()
@@ -269,22 +323,76 @@ class NavigationEngine(
                 }
                 Log.i("DisplayConnectRoute", "Automatic reroute requested")
             }
+        } else if (gpxMode && rerouteJob == null && confirmed) {
+            // Modo GPX: ruta de acceso al PUNTO de la traza mas cercano (proyeccion
+            // en segmento), nunca reruta al destino. Ramas coincidentes (ida/vuelta
+            // o cierre circular) solo se resuelven si el rumbo fiable distingue
+            // UNA sola; si no distingue, NO se elige indice menor ni nada parecido:
+            // es ambiguo, no hay ruta automatica y se dice expresamente. Al
+            // enganchar, la traza continua desde ese punto (por delante o por
+            // detras, sin monotonia). Tope de 3 conectores sin enganche por
+            // sesion: despues se queda en "Fuera de ruta" hasta que se acerque
+            // solo (evita bucle si OSRM ajusta el punto lejos de la traza).
+            val track = if (gpxRejoinActive) gpxTrack else currentRoute
+            if (track != null && gpxRejoinAttempts < 3) {
+                val margin = maxOf(15.0, raw.accuracyM.toDouble() * 2)
+                val candidates = TrackRejoin.nearestJoinCandidates(track.coordinates, rawPosition, margin)
+                val chosen = when {
+                    candidates.isEmpty() -> null
+                    candidates.size == 1 -> candidates[0]
+                    else -> reliableBearing?.let { heading ->
+                        candidates.filter { TrackRejoin.bearingDiff(heading, it.bearing) <= 55.0 }
+                            .singleOrNull()
+                    }
+                }
+                gpxRejoinAmbiguous = chosen == null && candidates.size > 1
+                if (chosen != null) {
+                    val (restM, restS) = TrackRejoin.remainingFrom(track, chosen.segmentIndex, chosen.fraction)
+                    gpxRejoinTrackRemainingM = restM
+                    gpxRejoinTrackRemainingS = restS
+                    reroutePolicy.requestStarted(nowMs)
+                    rerouteFailed = false
+                    currentCoroutineContext().ensureActive()
+                    val navigationParent = locationJob ?: return@withContext
+                    rerouteIsGpxConnector = true
+                    rerouteJob = scope.async(Dispatchers.IO + navigationParent) {
+                        routeProvider.fetchRoute(rawPosition, chosen.point, settings.routeProfile,
+                            com.example.displayconnect.routing.ForwardReroute.reliableBearing(
+                                raw.bearing, raw.speedMps, raw.accuracyM))
+                    }
+                    Log.i("DisplayConnectRoute", "GPX rejoin: connector to segment ${chosen.segmentIndex} (${chosen.distanceM.toInt()} m, ${candidates.size} candidates)")
+                } else if (candidates.size > 1) {
+                    Log.i("DisplayConnectRoute", "GPX rejoin: ambiguous join (${candidates.size} branches), no automatic route")
+                }
+            } else {
+                gpxRejoinAmbiguous = false
+            }
         }
         val deviated = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         if (deviated) progress = progress.copy(offRoute = true,
             remainingDistanceM = null, remainingDurationS = null)
         val rerouteInstruction = if (deviated) when (AppLanguage.language.value) {
-            "es" -> if (rerouteJob != null) "Recalculando ruta..." else if (rerouteFailed)
+            "es" -> if (rerouteJob != null) "Recalculando ruta..." else if (gpxRejoinAmbiguous)
+                "Ruta ambigua - sin recalculo automatico" else if (rerouteFailed)
                 "Sin ruta nueva - revisa la app" else "Fuera de ruta"
-            "en" -> if (rerouteJob != null) "Recalculating route..." else if (rerouteFailed)
+            "en" -> if (rerouteJob != null) "Recalculating route..." else if (gpxRejoinAmbiguous)
+                "Ambiguous track - no auto reroute" else if (rerouteFailed)
                 "No new route - check the app" else "Off route"
-            else -> if (rerouteJob != null) "Recalculando rota..." else if (rerouteFailed)
+            else -> if (rerouteJob != null) "Recalculando rota..." else if (gpxRejoinAmbiguous)
+                "Rota ambigua - sem recalculo automatico" else if (rerouteFailed)
                 "Sem nova rota - confira o app" else "Fora da rota"
         } else null
         val position = GpsFilter.displayPosition(LatLon(raw.lat, raw.lon), progress.matchedPosition,
             progress.distanceFromRouteM, raw.accuracyM, raw.speedMps, raw.bearing, progress.routeBearing)
         val update = raw.copy(lat = position.lat, lon = position.lon)
-        TransmissionHub.updateTripProgress(progress)
+        // Con conector activo, los totales que ve el usuario (movil y placa)
+        // son conector + traza restante; ManeuverSelector sigue usando el
+        // progreso relativo al conector (variable progress, intacta).
+        val tripForUi = if (gpxRejoinActive && !progress.offRoute) progress.copy(
+            remainingDistanceM = progress.remainingDistanceM?.plus(gpxRejoinTrackRemainingM.toInt()),
+            remainingDurationS = progress.remainingDurationS?.plus(gpxRejoinTrackRemainingS.toInt())
+        ) else progress
+        TransmissionHub.updateTripProgress(tripForUi)
         if (navClient.connectionState.value != com.example.displayconnect.models.ConnectionState.CONNECTED) {
             return@withContext
         }
@@ -339,9 +447,10 @@ class NavigationEngine(
             instruction = rerouteInstruction ?: NavigationText.maneuver(step, AppLanguage.language.value),
             language = AppLanguage.language.value,
             distanceM = distanceM,
-            remainingDistanceM = progress.remainingDistanceM,
-            remainingDurationS = progress.remainingDurationS,
-            routeTotalDistanceM = currentRoute.distanceM.takeIf { it.isFinite() && it > 0 }?.toInt(),
+            remainingDistanceM = tripForUi.remainingDistanceM,
+            remainingDurationS = tripForUi.remainingDurationS,
+            routeTotalDistanceM = (if (gpxRejoinActive) currentRoute.distanceM + gpxRejoinTrackRemainingM
+                else currentRoute.distanceM).takeIf { it.isFinite() && it > 0 }?.toInt(),
             offRoute = progress.offRoute,
             street = step?.street ?: "",
             routeScreenPoints = screenRoute,
