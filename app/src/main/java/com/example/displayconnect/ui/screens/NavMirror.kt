@@ -150,7 +150,7 @@ fun NavMirror(
 
         // Calle / aviso
         val warning = when {
-            nav?.offRoute == true || trip.offRoute -> "Recalculando…"
+            nav?.offRoute == true || trip.offRoute -> nav?.instruction?.takeIf { it.isNotBlank() } ?: "Fuera de ruta"
             nav?.gpsWeak == true -> "GPS débil"
             else -> null
         }
