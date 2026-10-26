@@ -44,6 +44,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val geocoder = NominatimGeocoder()
     private var searchJob: Job? = null
     val tripProgress = TransmissionHub.tripProgress
+    val gpxJoinOptions = TransmissionHub.gpxJoinOptions
     val offlineMap = TransmissionHub.offlineMap
     val gps = TransmissionHub.gps
 
@@ -506,6 +507,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } ?: ""
         }.getOrDefault("").ifBlank { "Ruta GPX" }
     }
+
+    /** Eleccion expresa del usuario entre las ramas de enganche GPX ambiguas. */
+    fun selectGpxJoinCandidate(index: Int) =
+        NavigationForegroundService.selectGpxJoin(getApplication(), index)
 
     fun stopNavigation() {
         pendingMapsBrowser = false
