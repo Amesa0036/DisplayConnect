@@ -14,7 +14,10 @@ enum class RouteProfile(val osrmProfile: String, val storageKey: String) {
     }
 
     companion object {
+        // Car routing is identical to motorcycle (same server and graph), so the car
+        // mode was removed from the pickers. A stored or unknown value maps to
+        // MOTORCYCLE instead of leaving a hidden selection active; nothing is deleted.
         fun fromStorage(value: String?): RouteProfile =
-            entries.find { it.storageKey == value } ?: CAR
+            entries.find { it.storageKey == value && it != CAR } ?: MOTORCYCLE
     }
 }
