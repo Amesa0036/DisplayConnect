@@ -86,4 +86,36 @@ class StreetGeometryTest {
         assertEquals(64, segments(ways).size)
         assertTrue(segments(ways, 0).isEmpty())
     }
+
+    @Test fun priorityWaySurvivesSaturationWithinItsGridCell() {
+        val ring = (0..8).map { i ->
+            val a = i * kotlin.math.PI * 2 / 8
+            geo(120.0 + 8 * kotlin.math.cos(a), 100.0 + 8 * kotlin.math.sin(a))
+        }
+        val filler = (0 until 200).map { y -> listOf(geo(20.0, y.toDouble()), geo(220.0, y.toDouble())) }
+        val ringSegments = segments(listOf(ring)).map { it.toList() }.toSet()
+        val drawn = StreetContextProjector.projectSegments(0.0, 0.0, filler + listOf(ring), 116.0, 64) { index ->
+            if (index == filler.size) 0 else 1
+        }.map { it.toList() }.toSet()
+        assertEquals(64, drawn.size)
+        assertTrue(drawn.containsAll(ringSegments))
+    }
+
+    @Test fun connectorTierSurvivesOverMinorStreets() {
+        val link = listOf(geo(20.0, 40.0), geo(220.0, 60.0))
+        val filler = (0 until 200).map { y -> listOf(geo(20.0, y.toDouble()), geo(220.0, y.toDouble())) }
+        val linkSegments = segments(listOf(link)).map { it.toList() }.toSet()
+        val drawn = StreetContextProjector.projectSegments(0.0, 0.0, filler + listOf(link), 116.0, 64) { index ->
+            if (index == filler.size) 1 else 2
+        }.map { it.toList() }.toSet()
+        assertEquals(64, drawn.size)
+        assertTrue(drawn.containsAll(linkSegments))
+    }
+
+    @Test fun withoutPriorityTiersTheOutputIsUnchanged() {
+        val ways = (0 until 200).map { y -> listOf(geo(20.0, y.toDouble()), geo(220.0, y.toDouble())) }
+        val before = segments(ways).map { it.toList() }
+        val after = StreetContextProjector.projectSegments(0.0, 0.0, ways, 116.0, 64).map { it.toList() }
+        assertEquals(before, after)
+    }
 }
