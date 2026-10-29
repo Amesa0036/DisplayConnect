@@ -89,10 +89,9 @@ class StreetGeometryTest {
     }
 
     @Test fun priorityWaySurvivesSaturationWithinItsGridCell() {
-        val ring = (0..8).map { i ->
-            val a = i * kotlin.math.PI * 2 / 8
-            geo(120.0 + 8 * kotlin.math.cos(a), 100.0 + 8 * kotlin.math.sin(a))
-        }
+        // Square maneuver ring: corners survive the density-driven re-simplification
+        // passes (tolerance 2.0/3.0), so the expected segments are shape-stable.
+        val ring = listOf(geo(112.0, 92.0), geo(128.0, 92.0), geo(128.0, 108.0), geo(112.0, 108.0), geo(112.0, 92.0))
         val filler = (0 until 200).map { y -> listOf(geo(20.0, y.toDouble()), geo(220.0, y.toDouble())) }
         val ringSegments = segments(listOf(ring)).map { it.toList() }.toSet()
         val drawn = StreetContextProjector.projectSegments(0.0, 0.0, filler + listOf(ring), 116.0, 64) { index ->
