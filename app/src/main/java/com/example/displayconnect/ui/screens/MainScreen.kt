@@ -221,7 +221,7 @@ fun MainScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                RouteProfile.entries.forEach { profile ->
+                RouteProfile.entries.filter { it != RouteProfile.CAR }.forEach { profile ->
                     FilterChip(
                         selected = uiState.routeProfile == profile,
                         onClick = { viewModel.updateRouteProfile(profile) },
