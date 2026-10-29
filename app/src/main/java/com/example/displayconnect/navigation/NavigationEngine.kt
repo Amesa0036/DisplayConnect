@@ -752,20 +752,18 @@ class NavigationEngine(
             centerLon = update.lon,
             ways = streets,
             scaleMeters = settings.mapScaleMeters,
-            // Maneuver arcs first, then the link/major roads that connect them;
-            // minor streets are the first sacrificed under the segment budget.
+            // Maneuver arcs first, then whatever keeps the network connected for the
+            // active profile (link/major roads motorized, pedestrian-dedicated ways on
+            // foot); the rest is sacrificed first under the segment budget.
             priority = { index ->
-                val tags = streetWays.getOrNull(index)?.tags
-                when {
-                    tags?.get("junction") in setOf("roundabout", "circular") -> 0
-                    tags?.get("highway")?.let { it.endsWith("_link") ||
-                        it in setOf("motorway", "trunk", "primary", "secondary", "tertiary") } == true -> 1
-                    else -> 2
-                }
+                streetWays.getOrNull(index)?.tags
+                    ?.let { StreetContextProjector.streetTier(it, settings.routeProfile) } ?: 2
             }
         ) }
 
-        val bearing = if (update.bearing.isFinite()) {
+        // Below ~2.5 m/s GPS bearing is noise (walking or stopped): the arrow follows
+        // the route direction, not the physical heading. Same gate as reliableBearing.
+        val bearing = if (update.bearing.isFinite() && raw.speedMps >= 2.5f) {
             update.bearing
         } else {
             computeBearingFromRoute(update, simplified)
