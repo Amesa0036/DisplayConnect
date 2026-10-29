@@ -1,6 +1,7 @@
 package com.example.displayconnect.map
 
 import com.example.displayconnect.routing.LatLon
+import com.example.displayconnect.routing.RouteProfile
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -117,5 +118,17 @@ class StreetGeometryTest {
         val before = segments(ways).map { it.toList() }
         val after = StreetContextProjector.projectSegments(0.0, 0.0, ways, 116.0, 64).map { it.toList() }
         assertEquals(before, after)
+    }
+
+    @Test fun streetTierAdaptsToTravelMode() {
+        val path = mapOf("highway" to "footway")
+        val road = mapOf("highway" to "tertiary")
+        val ring = mapOf("junction" to "roundabout", "highway" to "tertiary")
+        assertEquals(1, StreetContextProjector.streetTier(path, RouteProfile.WALKING))
+        assertEquals(2, StreetContextProjector.streetTier(path, RouteProfile.MOTORCYCLE))
+        assertEquals(2, StreetContextProjector.streetTier(mapOf("highway" to "motorway"), RouteProfile.WALKING))
+        assertEquals(1, StreetContextProjector.streetTier(road, RouteProfile.MOTORCYCLE))
+        assertEquals(0, StreetContextProjector.streetTier(ring, RouteProfile.WALKING))
+        assertEquals(0, StreetContextProjector.streetTier(ring, RouteProfile.MOTORCYCLE))
     }
 }
