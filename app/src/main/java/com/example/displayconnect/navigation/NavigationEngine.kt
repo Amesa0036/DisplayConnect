@@ -737,7 +737,18 @@ class NavigationEngine(
             centerLat = update.lat,
             centerLon = update.lon,
             ways = streets,
-            scaleMeters = settings.mapScaleMeters
+            scaleMeters = settings.mapScaleMeters,
+            // Maneuver arcs first, then the link/major roads that connect them;
+            // minor streets are the first sacrificed under the segment budget.
+            priority = { index ->
+                val tags = streetWays.getOrNull(index)?.tags
+                when {
+                    tags?.get("junction") in setOf("roundabout", "circular") -> 0
+                    tags?.get("highway")?.let { it.endsWith("_link") ||
+                        it in setOf("motorway", "trunk", "primary", "secondary", "tertiary") } == true -> 1
+                    else -> 2
+                }
+            }
         ) }
 
         val bearing = if (update.bearing.isFinite()) {
