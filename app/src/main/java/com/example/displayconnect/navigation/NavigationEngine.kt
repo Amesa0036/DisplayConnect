@@ -55,6 +55,7 @@ class NavigationEngine(
     private var destination: LatLon? = null
     private var locationJob: Job? = null
     private var downloadJob: Job? = null
+    private var viewportTopUpJob: Job? = null
     private var rerouteJob: Deferred<Result<RouteData>>? = null
     private val reroutePolicy = ReroutePolicy()
     private val altitudeEstimator = AltitudeEstimator()
@@ -190,6 +191,10 @@ class NavigationEngine(
         if (downloadJob?.isActive == true) return
         val currentRoute = route ?: return
         val settings = activeSettings ?: return
+        // A route (re)prepare owns the network now: stop any viewport top-up so the
+        // two never overlap, and so a stale viewport is not fetched after a reroute.
+        viewportTopUpJob?.cancel()
+        viewportTopUpJob = null
         downloadJob = scope.launch {
             offlineMap.prepare(currentRoute, settings.mapScaleMeters) { progress ->
                 withContext(Dispatchers.Main) { TransmissionHub.updateOfflineMap(progress) }
@@ -213,6 +218,8 @@ class NavigationEngine(
         locationJob = null
         downloadJob?.cancel()
         downloadJob = null
+        viewportTopUpJob?.cancel()
+        viewportTopUpJob = null
         gpsWatchdog?.cancel()
         gpsWatchdog = null
         gpsFilter = null
@@ -733,6 +740,13 @@ class NavigationEngine(
                 settings.routeProfile in listOf(com.example.displayconnect.routing.RouteProfile.CAR,
                     com.example.displayconnect.routing.RouteProfile.MOTORCYCLE), settings.routeProfile)
         TransmissionHub.updateMapCoverage(covered)
+        if (!covered && downloadJob?.isActive != true && viewportTopUpJob?.isActive != true) {
+            // Mid-ride deviation or destination change left the live viewport outside
+            // the prepared corridor: fetch only its missing tiles, cache untouched.
+            viewportTopUpJob = scope.launch {
+                offlineMap.prepareViewport(LatLon(update.lat, update.lon), settings.mapScaleMeters)
+            }
+        }
         val streetSegments = withContext(Dispatchers.Default) { StreetContextProjector.projectSegments(
             centerLat = update.lat,
             centerLon = update.lon,
