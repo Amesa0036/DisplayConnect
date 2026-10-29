@@ -10,6 +10,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -108,7 +110,7 @@ class RecentDestinations(context: Context) {
 
 // ---------- Pantalla Home ----------
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun HomeScreen(
     onNavigateToSettings: () -> Unit,
@@ -264,11 +266,11 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.primary)
                             Text(uiState.destLabel, fontSize = 20.sp, fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface)
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 listOf(
                                     RouteProfile.MOTORCYCLE to "Moto",
-                                    RouteProfile.CAR to "Coche",
-                                    RouteProfile.BIKE to "Bici"
+                                    RouteProfile.BIKE to "Bici",
+                                    RouteProfile.WALKING to "A pie"
                                 ).forEach { (profile, label) ->
                                     FilterChip(
                                         selected = uiState.routeProfile == profile,
