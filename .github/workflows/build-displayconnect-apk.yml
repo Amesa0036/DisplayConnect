@@ -61,7 +61,7 @@ jobs:
           echo "ANDROID_PREFS_ROOT=${ANDROID_PREFS_ROOT:-unset}"
           echo "ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
           echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
-          ./gradlew --no-daemon :app:signingReport :app:assembleDebug
+          ./gradlew --no-daemon :app:signingReport :app:testDebugUnitTest :app:assembleDebug
 
       - name: Sign final APK explicitly and enforce certificate match
         shell: bash
