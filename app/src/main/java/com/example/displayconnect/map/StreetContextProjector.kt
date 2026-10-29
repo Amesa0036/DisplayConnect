@@ -15,6 +15,27 @@ object StreetContextProjector {
      * within each tier and the 6x3 grid distribution are unchanged; the budget is
      * still hard-capped.
      */
+
+    /**
+     * Street tier under budget pressure, per travel mode: maneuver arcs first (0),
+     * then the ways that keep the network connected for that mode (1): link and major
+     * roads when motorized, pedestrian-dedicated ways when on foot. Everything else
+     * last. Measured on a real dense interchange: with a walking profile all rings
+     * survive and the sacrifice falls on car-oriented roads instead of paths.
+     */
+    fun streetTier(tags: Map<String, String>, profile: com.example.displayconnect.routing.RouteProfile): Int {
+        if (tags["junction"] in setOf("roundabout", "circular")) return 0
+        val highway = tags["highway"] ?: return 2
+        return when (profile) {
+            com.example.displayconnect.routing.RouteProfile.WALKING ->
+                if (highway in setOf("footway", "path", "pedestrian", "steps", "cycleway",
+                        "living_street")) 1 else 2
+            else ->
+                if (highway.endsWith("_link") || highway in setOf("motorway", "trunk",
+                        "primary", "secondary", "tertiary")) 1 else 2
+        }
+    }
+
     fun projectSegments(
         centerLat: Double, centerLon: Double, ways: List<List<LatLon>>,
         scaleMeters: Double, maxSegments: Int = MAX_SEGMENTS,
