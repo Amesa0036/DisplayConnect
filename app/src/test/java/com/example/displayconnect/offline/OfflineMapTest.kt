@@ -81,7 +81,7 @@ class OfflineMapTest {
         val folder = temp.newFolder()
         val tile = RouteCoverage.plan(points, 400.0).first()
         OfflineDiskStore(folder).save(tile, emptyList())
-        File(folder, tile.key + ".gz").writeBytes(byteArrayOf(1, 2, 3))
+        File(folder, "speed-v1-" + tile.key + ".gz").writeBytes(byteArrayOf(1, 2, 3))
         val reloaded = OfflineDiskStore(folder)
         assertNull(reloaded.load(tile))
         reloaded.save(tile, emptyList())
