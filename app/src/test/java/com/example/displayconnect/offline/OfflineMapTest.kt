@@ -104,4 +104,55 @@ class OfflineMapTest {
         assertTrue(RouteProfile.CAR.routeBaseUrl.contains("/routed-car/"))
         assertNotEquals(RouteProfile.CAR.routeBaseUrl, RouteProfile.BIKE.routeBaseUrl)
     }
+
+    @Test fun viewportTopUpPreservesCachedTilesOutsideViewport() = runBlocking {
+        val folder = temp.newFolder()
+        val source = StreetSource { bounds ->
+            bounds.mapIndexed { i, b -> StreetWay(10_000L + i, listOf(LatLon(b.south, b.west), LatLon(b.north, b.east))) }
+        }
+        val repo = OfflineMapRepository(folder, source, 0, 0)
+        repo.prepare(route(), 400.0) { }
+        val before = folder.listFiles()!!.size
+        assertTrue(repo.prepareViewport(LatLon(-23.0, -46.0), 400.0, nowMs = 1_000_000))
+        assertTrue(folder.listFiles()!!.size > before)
+        val (_, complete) = repo.visibleWays(points.first(), 400.0)
+        assertTrue(complete)
+    }
+
+    @Test fun viewportTopUpBacksOffAfterFailures() = runBlocking {
+        var calls = 0
+        val repo = OfflineMapRepository(temp.newFolder(), StreetSource { calls++; throw Exception("offline") }, 0, 60_000)
+        assertFalse(repo.prepareViewport(points.first(), 400.0, nowMs = 1_000_000))
+        assertEquals(1, calls)
+        assertFalse(repo.prepareViewport(points.first(), 400.0, nowMs = 1_000_000 + 60_000))
+        assertEquals(1, calls) // 1 fallo -> espera 120 s
+        assertFalse(repo.prepareViewport(points.first(), 400.0, nowMs = 1_000_000 + 120_000))
+        assertEquals(2, calls)
+        assertFalse(repo.prepareViewport(points.first(), 400.0, nowMs = 1_000_000 + 240_000))
+        assertEquals(2, calls) // 2 fallos -> espera 240 s
+        assertFalse(repo.prepareViewport(points.first(), 400.0, nowMs = 1_000_000 + 360_000))
+        assertEquals(3, calls)
+    }
+
+    @Test fun viewportTopUpCapsTilesPerPass() = runBlocking {
+        val requested = mutableListOf<Int>()
+        val repo = OfflineMapRepository(temp.newFolder(), StreetSource { bounds ->
+            requested += bounds.size; emptyList()
+        }, 0, 0)
+        // A very large viewport needs more than 8 tiles; one pass must not burst them all.
+        repo.prepareViewport(points.first(), 3000.0, nowMs = 1_000_000)
+        assertTrue(requested.toString(), requested.sum() <= 8)
+    }
+
+    @Test fun viewportTopUpCoversExactlyWhatStreetWaysReads() = runBlocking {
+        val folder = temp.newFolder()
+        val repo = OfflineMapRepository(folder, StreetSource { bounds ->
+            bounds.mapIndexed { i, b -> StreetWay(20_000L + i, listOf(LatLon(b.south, b.west), LatLon(b.north, b.east))) }
+        }, 0, 0)
+        val center = LatLon(41.4978, 2.1171)
+        assertTrue(repo.prepareViewport(center, 400.0))
+        val (ways, complete) = repo.streetWays(center, 400.0)
+        assertTrue(complete)
+        assertTrue(ways.isNotEmpty())
+    }
 }
