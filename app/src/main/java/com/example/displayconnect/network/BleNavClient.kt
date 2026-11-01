@@ -90,6 +90,9 @@ class BleNavClient(context: Context) {
     private val boardMutex = Mutex()
     private val boardDecoder = BoardReplyDecoder()
     private var boardReplyId: String? = null
+    private val otaActive = AtomicBoolean(false)
+    private val otaLines = Channel<String>(capacity = Channel.BUFFERED)
+    private val readAck = AtomicReference<CompletableDeferred<Result<ByteArray>>?>(null)
     private var boardReply: CompletableDeferred<JSONObject>? = null
 
     private fun clearBoardSession() {
@@ -147,6 +150,7 @@ class BleNavClient(context: Context) {
     private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
         if (connection !== gatt) return
         for (line in boardDecoder.feed(bytes)) {
+            if (otaActive.get() && line.startsWith("OTA:")) { otaLines.trySend(line); continue }
             try {
                 val json = JSONObject(line)
                 synchronized(this) {
@@ -154,6 +158,104 @@ class BleNavClient(context: Context) {
                         boardReply?.complete(json)
                 }
             } catch (_: Exception) { }
+        }
+    }
+
+
+    /** Lee la version del firmware por la caracteristica de version (v20+). */
+    suspend fun boardFirmwareVersion(): Result<String> {
+        val connection = gatt ?: return Result.failure(Exception("La placa no esta conectada"))
+        val chr = connection.getService(SERVICE_UUID)?.getCharacteristic(VERSION_UUID)
+            ?: return Result.failure(Exception("Este firmware no informa su version (v19 o anterior)"))
+        val deferred = CompletableDeferred<Result<ByteArray>>()
+        readAck.set(deferred)
+        if (!connection.readCharacteristic(chr)) {
+            readAck.compareAndSet(deferred, null)
+            return Result.failure(Exception("No se pudo leer la version"))
+        }
+        val res = withTimeoutOrNull(5000) { deferred.await() }
+            ?: return Result.failure(Exception("La placa no responde"))
+        return res.map { String(it, Charsets.UTF_8).trim() }
+    }
+
+    /**
+     * OTA por BLE: OTA:BEGIN, ventanas de 4096 con OTA:ACK, y OTA:OK final.
+     * La placa verifica SHA-256, instala en la otra particion y reinicia;
+     * si algo falla sigue arrancando el firmware anterior.
+     */
+    suspend fun otaUpdate(
+        bin: ByteArray,
+        sha256Hex: String,
+        onProgress: (sent: Int, total: Int) -> Unit
+    ): Result<Unit> {
+        val connection = gatt ?: return Result.failure(Exception("La placa no esta conectada"))
+        val characteristic = rxCharacteristic ?: return Result.failure(Exception("La placa no esta lista"))
+        if (_connectionState.value != ConnectionState.CONNECTED)
+            return Result.failure(Exception("La placa no esta conectada"))
+        if (!otaActive.compareAndSet(false, true))
+            return Result.failure(Exception("Ya hay una actualizacion en curso"))
+        _boardBusy.value = true
+        while (otaLines.tryReceive().isSuccess) { }
+        try {
+            val ready = otaExchange(connection, characteristic,
+                "OTA:BEGIN ${bin.size} $sha256Hex", 10_000)
+            if (!ready.startsWith("OTA:READY")) return otaFailure(ready)
+            var sent = 0
+            while (sent < bin.size) {
+                if (connection !== gatt)
+                    return Result.failure(Exception("Conexion perdida durante la actualizacion"))
+                val end = minOf(sent + OTA_WINDOW_BYTES, bin.size)
+                val ok = writeMutex.withLock {
+                    writeInChunks(connection, characteristic, bin.copyOfRange(sent, end))
+                }
+                if (!ok) {
+                    sendOtaAbort(connection, characteristic)
+                    return Result.failure(Exception("Fallo de escritura BLE"))
+                }
+                sent = end
+                onProgress(sent, bin.size)
+                if (sent < bin.size) {
+                    val ack = nextOtaLine(20_000)
+                    if (!ack.startsWith("OTA:ACK")) return otaFailure(ack)
+                }
+            }
+            val deadline = SystemClock.elapsedRealtime() + 60_000
+            while (SystemClock.elapsedRealtime() < deadline) {
+                val line = nextOtaLine(deadline - SystemClock.elapsedRealtime())
+                if (line.startsWith("OTA:OK")) return Result.success(Unit)
+                if (line.startsWith("OTA:ERR") || line == "OTA:ERR timeout") return otaFailure(line)
+            }
+            return Result.failure(Exception("La placa no confirma la instalacion"))
+        } finally {
+            otaActive.set(false)
+            _boardBusy.value = false
+        }
+    }
+
+    private suspend fun otaExchange(
+        gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic,
+        text: String, timeoutMs: Long
+    ): String {
+        val ok = writeMutex.withLock {
+            writeInChunks(gatt, characteristic, ("\n" + text + "\n").toByteArray(Charsets.UTF_8))
+        }
+        if (!ok) return "OTA:ERR escritura"
+        return nextOtaLine(timeoutMs)
+    }
+
+    private suspend fun nextOtaLine(timeoutMs: Long): String =
+        withTimeoutOrNull(timeoutMs) { otaLines.receive() } ?: "OTA:ERR timeout"
+
+    private fun otaFailure(line: String): Result<Unit> =
+        Result.failure(Exception(line.removePrefix("OTA:").replace('_', ' ')))
+
+    private fun sendOtaAbort(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+        scope.launch {
+            writeMutex.withLock {
+                runCatching {
+                    writeInChunks(gatt, characteristic, "\nOTA:ABORT\n".toByteArray(Charsets.UTF_8))
+                }
+            }
         }
     }
 
@@ -249,6 +351,7 @@ class BleNavClient(context: Context) {
     }
 
     fun sendNavMessage(json: String): Boolean {
+        if (otaActive.get()) return false
         if (_connectionState.value != ConnectionState.CONNECTED) return false
         val characteristic = rxCharacteristic ?: return false
         val gattLocal = gatt ?: return false
@@ -474,6 +577,21 @@ class BleNavClient(context: Context) {
         }
 
         @Deprecated("Android legacy callback")
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) {
+            if (characteristic.uuid != VERSION_UUID) return
+            val ack = readAck.getAndSet(null) ?: return
+            if (status == BluetoothGatt.GATT_SUCCESS) ack.complete(Result.success(characteristic.value ?: ByteArray(0)))
+            else ack.complete(Result.failure(Exception("Lectura fallida ($status)")))
+        }
+
+        override fun onCharacteristicRead(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray, status: Int) {
+            if (characteristic.uuid != VERSION_UUID) return
+            val ack = readAck.getAndSet(null) ?: return
+            if (status == BluetoothGatt.GATT_SUCCESS) ack.complete(Result.success(value))
+            else ack.complete(Result.failure(Exception("Lectura fallida ($status)")))
+        }
+
+        @Deprecated("Android legacy callback")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (Build.VERSION.SDK_INT < 33 && characteristic.uuid == TX_UUID)
                 receiveBoardData(gatt, characteristic.value ?: return)
@@ -488,12 +606,14 @@ class BleNavClient(context: Context) {
         val SERVICE_UUID: UUID = UUID.fromString("6E400001-B5A3-F393-E0A9-E50E24DCCA9E")
         val RX_UUID: UUID = UUID.fromString("6E400002-B5A3-F393-E0A9-E50E24DCCA9E")
         val TX_UUID: UUID = UUID.fromString("6E400003-B5A3-F393-E0A9-E50E24DCCA9E")
+        val VERSION_UUID: UUID = UUID.fromString("6E400004-B5A3-F393-E0A9-E50E24DCCA9E")
         private val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
         private const val DEVICE_NAME_HINT = "DisplayConnect"
         private const val REQUESTED_MTU = 512
         private const val DEFAULT_CHUNK = 180
         private const val MAX_PAYLOAD_BYTES = 8192
+        private const val OTA_WINDOW_BYTES = 4096
         private const val WRITE_TIMEOUT_MS = 2000L
         private const val TAG = "DisplayConnectBLE"
         private const val HEARTBEAT_INTERVAL_SEC = 15L
