@@ -19,13 +19,16 @@ class NominatimGeocoder(
     private val nominatimUrl: String = "https://nominatim.openstreetmap.org/search",
     private val photonUrl: String = "https://photon.komoot.io/api/"
 ) {
-    suspend fun search(query: String, city: String = "", limit: Int = 10): Result<List<PlaceSearchResult>> =
+    suspend fun search(query: String, city: String = "", limit: Int = 10,
+                       biasLat: Double? = null, biasLon: Double? = null): Result<List<PlaceSearchResult>> =
         withContext(Dispatchers.IO) {
             try {
                 require(query.trim().length >= 3) { "Query too short" }
                 val fullQuery = AddressQuery.withCity(query, city)
                 val maxResults = limit.coerceIn(1, 15)
-                val key = "$nominatimUrl|$photonUrl|$fullQuery|$maxResults".lowercase()
+                val biasKey = if (biasLat != null && biasLon != null)
+                    "|${Math.round(biasLat * 10)},${Math.round(biasLon * 10)}" else ""
+                val key = "$nominatimUrl|$photonUrl|$fullQuery|$maxResults$biasKey".lowercase()
                 val results = mutex.withLock {
                     cache[key]?.let { return@withLock it }
                     val number = AddressQuery.requestedHouseNumber(query)
@@ -33,17 +36,44 @@ class NominatimGeocoder(
                     suspend fun attempt(block: suspend () -> List<PlaceSearchResult>): List<PlaceSearchResult> =
                         try { block() } catch (e: CancellationException) { throw e }
                         catch (e: Exception) { failure = e; emptyList() }
-                    val primary = attempt { nominatim(fullQuery, maxResults, number) }
+                    val primary = attempt { nominatim(fullQuery, maxResults, number, biasLat, biasLon) }
                     val extra = if (primary.size < maxResults) attempt {
-                        photon(fullQuery, maxResults, number)
+                        photon(fullQuery, maxResults, number, biasLat, biasLon)
                     } else emptyList()
                     var merged = (primary + extra).distinctBy {
                         Triple(it.displayName.substringBefore(',').lowercase(),
                             Math.round(it.lat * 10000), Math.round(it.lon * 10000))
                     }
+                    // Name relevance first (a plaza named like the query beats any
+                    // random street in the comarca), then distance to the user.
+                    val norm = { s: String ->
+                        java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+                            .replace(Regex("\\p{Mn}+"), "")
+                    }
+                    val tokens = norm(AddressQuery.withoutHouseNumber(query))
+                        .split(Regex("[^a-z0-9]+")).filter { it.length >= 2 }
+                    fun nameScore(r: PlaceSearchResult): Int {
+                        if (tokens.isEmpty()) return 0
+                        val name = norm(r.displayName.substringBefore(','))
+                        val rest = norm(r.displayName.substringAfter(',', ""))
+                        return when {
+                            name == tokens.joinToString(" ") -> 0
+                            tokens.all { it in name } -> 1
+                            tokens.any { it in name } -> 2
+                            tokens.all { it in rest } -> 3
+                            else -> 4
+                        }
+                    }
+                    merged = if (biasLat != null && biasLon != null) {
+                        merged.sortedWith(compareBy({ nameScore(it) }, {
+                            val dLat = it.lat - biasLat
+                            val dLon = (it.lon - biasLon) * Math.cos(Math.toRadians(biasLat))
+                            dLat * dLat + dLon * dLon
+                        }))
+                    } else merged.sortedBy { nameScore(it) }
                     val relaxed = AddressQuery.withCity(AddressQuery.withoutHouseNumber(query), city)
                     if (merged.isEmpty() && number != null && relaxed != fullQuery) {
-                        merged = attempt { nominatim(relaxed, maxResults, number) }
+                        merged = attempt { nominatim(relaxed, maxResults, number, biasLat, biasLon) }
                             .map { it.copy(houseNumberUnconfirmed = true) }
                     }
                     if (merged.isEmpty()) {
@@ -60,15 +90,23 @@ class NominatimGeocoder(
             catch (e: Exception) { Result.failure(e) }
         }
 
-    private suspend fun nominatim(query: String, limit: Int, number: String?): List<PlaceSearchResult> {
+    private suspend fun nominatim(query: String, limit: Int, number: String?,
+                                  biasLat: Double? = null, biasLon: Double? = null): List<PlaceSearchResult> {
         val elapsed = (System.nanoTime() - lastRequestNs) / 1_000_000
         if (elapsed < 1100) delay(1100 - elapsed)
         currentCoroutineContext().ensureActive()
         lastRequestNs = System.nanoTime()
-        val url = nominatimUrl.toHttpUrl().newBuilder()
+        val builder = nominatimUrl.toHttpUrl().newBuilder()
             .addQueryParameter("q", query).addQueryParameter("format", "jsonv2")
             .addQueryParameter("limit", limit.toString()).addQueryParameter("addressdetails", "1")
-            .addQueryParameter("accept-language", "pt-BR,pt,en").build()
+            .addQueryParameter("accept-language", "es,ca,en")
+        if (biasLat != null && biasLon != null) {
+            // Bias (not restrict) results toward the user's position: viewbox without bounded=1.
+            val d = 1.5
+            builder.addQueryParameter("viewbox",
+                "${biasLon - d},${biasLat + d},${biasLon + d},${biasLat - d}")
+        }
+        val url = builder.build()
         val array = JSONArray(request(url))
         return buildList {
             for (i in 0 until array.length()) {
@@ -83,9 +121,15 @@ class NominatimGeocoder(
         }
     }
 
-    private suspend fun photon(query: String, limit: Int, number: String?): List<PlaceSearchResult> {
-        val url = photonUrl.toHttpUrl().newBuilder()
-            .addQueryParameter("q", query).addQueryParameter("limit", limit.toString()).build()
+    private suspend fun photon(query: String, limit: Int, number: String?,
+                               biasLat: Double? = null, biasLon: Double? = null): List<PlaceSearchResult> {
+        val builder = photonUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("q", query).addQueryParameter("limit", limit.toString())
+        if (biasLat != null && biasLon != null) {
+            builder.addQueryParameter("lat", biasLat.toString())
+                .addQueryParameter("lon", biasLon.toString())
+        }
+        val url = builder.build()
         val features = JSONObject(request(url)).getJSONArray("features")
         return buildList {
             for (i in 0 until features.length()) {
