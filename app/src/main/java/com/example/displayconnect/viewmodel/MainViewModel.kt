@@ -16,6 +16,7 @@ import com.example.displayconnect.R
 import com.example.displayconnect.maps.MapsBrowserActivity
 import com.example.displayconnect.models.MainUiState
 import com.example.displayconnect.navigation.NavigationForegroundService
+import com.example.displayconnect.network.FirmwareRelease
 import com.example.displayconnect.network.BleDeviceItem
 import com.example.displayconnect.routing.GpxRouteBuilder
 import com.example.displayconnect.routing.GpxParser
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.security.MessageDigest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
@@ -48,6 +50,62 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val boardBusy = navClient.boardBusy
     private val _boardMessage = MutableStateFlow<String?>(null)
     val boardMessage: StateFlow<String?> = _boardMessage.asStateFlow()
+
+    private val _otaMessage = MutableStateFlow<String?>(null)
+    val otaMessage: StateFlow<String?> = _otaMessage.asStateFlow()
+    private val _otaBusy = MutableStateFlow(false)
+    val otaBusy: StateFlow<Boolean> = _otaBusy.asStateFlow()
+    private val _otaProgress = MutableStateFlow(-1)
+    val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
+
+    fun startFirmwareUpdate() {
+        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value) return
+        if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
+            _otaMessage.value = "Conecta la placa primero."
+            return
+        }
+        viewModelScope.launch {
+            _otaBusy.value = true
+            _otaProgress.value = -1
+            _otaMessage.value = "Buscando actualizaciones..."
+            try {
+                val manifest = FirmwareRelease.fetchLatest().getOrElse {
+                    _otaMessage.value = "No se pudo consultar la actualizacion: ${it.message}"
+                    return@launch
+                }
+                val boardVersion = navClient.boardFirmwareVersion().getOrNull()
+                if (boardVersion == manifest.version) {
+                    _otaMessage.value = "La placa ya tiene ${manifest.version}."
+                    return@launch
+                }
+                _otaMessage.value = "Descargando firmware ${manifest.version}..."
+                val bin = FirmwareRelease.download(manifest.binUrl).getOrElse {
+                    _otaMessage.value = "No se pudo descargar el firmware: ${it.message}"
+                    return@launch
+                }
+                if (bin.size != manifest.size || sha256Hex(bin) != manifest.sha256) {
+                    _otaMessage.value = "La descarga no es valida. Intentalo de nuevo."
+                    return@launch
+                }
+                _otaMessage.value = "Actualizando la placa... no la apagues"
+                val result = navClient.otaUpdate(bin, manifest.sha256) { sent, total ->
+                    _otaProgress.value = (sent * 100) / total
+                }
+                _otaMessage.value = result.fold(
+                    onSuccess = { "Actualizacion ${manifest.version} instalada. La placa se reinicia sola." },
+                    onFailure = { "Error actualizando: ${it.message}. La placa sigue con su firmware anterior." }
+                )
+            } finally {
+                _otaBusy.value = false
+                _otaProgress.value = -1
+            }
+        }
+    }
+
+    private fun sha256Hex(data: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(data)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
 
     fun refreshBoardInfo() = runBoardCommand("board_info")
     fun identifyBoard() = runBoardCommand("board_identify")
