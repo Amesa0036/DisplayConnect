@@ -86,7 +86,9 @@ class NominatimGeocoder(
                         // A trailing token is often the town ("plaza catalunya sabadell");
                         // a place named exactly like the core query outranks one that
                         // only mentions the town.
-                        for (k in tokens.size downTo 1) {
+                        // Prefix needs >= 2 tokens: a lone "plaza" in "Sabadell Plaça
+                        // Major" must not tie with the exact "Plaça Catalunya" match.
+                        for (k in tokens.size downTo 2) {
                             if (tokens.take(k).all { tokenIn(it, name) })
                                 return if (k == tokens.size) 0 else 1
                         }
