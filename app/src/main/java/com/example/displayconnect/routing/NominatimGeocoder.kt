@@ -36,32 +36,66 @@ class NominatimGeocoder(
                     suspend fun attempt(block: suspend () -> List<PlaceSearchResult>): List<PlaceSearchResult> =
                         try { block() } catch (e: CancellationException) { throw e }
                         catch (e: Exception) { failure = e; emptyList() }
-                    val primary = attempt { nominatim(fullQuery, maxResults, number, biasLat, biasLon) }
-                    val extra = if (primary.size < maxResults) attempt {
-                        photon(fullQuery, maxResults, number, biasLat, biasLon)
-                    } else emptyList()
-                    var merged = (primary + extra).distinctBy {
-                        Triple(it.displayName.substringBefore(',').lowercase(),
-                            Math.round(it.lat * 10000), Math.round(it.lon * 10000))
-                    }
-                    // Name relevance first (a plaza named like the query beats any
-                    // random street in the comarca), then distance to the user.
+                    // es/ca street-type variants: users type "plaza"/"calle" but Catalan
+                    // places are "plaça"/"carrer"; without the variant providers miss them.
                     val norm = { s: String ->
                         java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
                             .replace(Regex("\\p{Mn}+"), "")
                     }
+                    val esToCa = mapOf("plaza" to "placa", "calle" to "carrer",
+                        "avenida" to "avinguda", "paseo" to "passeig", "camino" to "cami",
+                        "travesia" to "travessera", "san" to "sant")
+                    val caToEs = mapOf("placa" to "plaza", "carrer" to "calle",
+                        "avinguda" to "avenida", "passeig" to "paseo", "cami" to "camino",
+                        "travessera" to "travesia", "sant" to "san")
+                    fun canonTok(t: String) = caToEs[t] ?: t
+                    val queryNorm = norm(fullQuery)
+                    val variant = queryNorm.split(Regex("[^a-z0-9]+"))
+                        .joinToString(" ") { esToCa[it] ?: it }
+                    val queries = if (variant != queryNorm) listOf(fullQuery, variant) else listOf(fullQuery)
+                    var primary = emptyList<PlaceSearchResult>()
+                    var extra = emptyList<PlaceSearchResult>()
+                    for (q in queries) {
+                        primary = primary + attempt { nominatim(q, maxResults, number, biasLat, biasLon) }
+                        extra = extra + attempt { photon(q, maxResults, number, biasLat, biasLon) }
+                    }
+                    var merged = (primary + extra).distinctBy {
+                        Triple(norm(it.displayName.substringBefore(',')),
+                            Math.round(it.lat * 1000), Math.round(it.lon * 1000))
+                    }
+                    // Name relevance first (a plaza named like the query beats any
+                    // random street in the comarca), then distance to the user.
+                    // Token matching tolerates one typo/variant letter (plaza~placa).
                     val tokens = norm(AddressQuery.withoutHouseNumber(query))
-                        .split(Regex("[^a-z0-9]+")).filter { it.length >= 2 }
+                        .split(Regex("[^a-z0-9]+")).filter { it.length >= 2 }.map { canonTok(it) }
+                    fun lev(a: String, b: String): Int {
+                        if (kotlin.math.abs(a.length - b.length) > 1) return 2
+                        val dp = IntArray(b.length + 1) { it }
+                        for (i in 1..a.length) {
+                            var prev = dp[0]; dp[0] = i
+                            for (j in 1..b.length) {
+                                val t = dp[j]
+                                dp[j] = minOf(dp[j] + 1, dp[j - 1] + 1, prev + if (a[i - 1] == b[j - 1]) 0 else 1)
+                                prev = t
+                            }
+                        }
+                        return dp[b.length]
+                    }
+                    fun tokenIn(token: String, text: String): Boolean {
+                        if (text.contains(token)) return true
+                        if (token.length < 4) return false
+                        return text.split(Regex("[^a-z0-9]+"))
+                            .any { w -> val c = canonTok(w); c == token || (c.length >= 3 && lev(c, token) <= 1) }
+                    }
                     fun nameScore(r: PlaceSearchResult): Int {
                         if (tokens.isEmpty()) return 0
                         val name = norm(r.displayName.substringBefore(','))
                         val rest = norm(r.displayName.substringAfter(',', ""))
                         return when {
-                            name == tokens.joinToString(" ") -> 0
-                            tokens.all { it in name } -> 1
-                            tokens.any { it in name } -> 2
-                            tokens.all { it in rest } -> 3
-                            else -> 4
+                            tokens.all { tokenIn(it, name) } -> 0
+                            tokens.any { tokenIn(it, name) } -> 1
+                            tokens.all { tokenIn(it, rest) } -> 2
+                            else -> 3
                         }
                     }
                     merged = if (biasLat != null && biasLon != null) {
