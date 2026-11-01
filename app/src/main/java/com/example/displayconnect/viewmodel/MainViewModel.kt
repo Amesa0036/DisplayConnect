@@ -25,6 +25,7 @@ import com.example.displayconnect.routing.PlaceSearchResult
 import com.example.displayconnect.routing.RouteData
 import com.example.displayconnect.routing.RouteProfile
 import com.example.displayconnect.utils.TransmissionHub
+import com.google.android.gms.location.LocationServices
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -205,6 +207,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    @android.annotation.SuppressLint("MissingPermission")
+    private suspend fun lastKnownLocation(): Pair<Double, Double>? = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        try {
+            LocationServices.getFusedLocationProviderClient(getApplication<Application>()).lastLocation
+                .addOnSuccessListener { loc -> cont.resume(loc?.let { it.latitude to it.longitude }) { } }
+                .addOnFailureListener { cont.resume(null) { } }
+        } catch (_: Exception) { cont.resume(null) { } }
+    }
+
     fun searchDestination() {
         searchJob?.cancel()
         val query = _uiState.value.destQuery.trim()
@@ -218,7 +229,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         searchJob = viewModelScope.launch {
             _uiState.update { it.copy(isSearching = true, searchResults = emptyList(), errorMessage = null) }
-            geocoder.search(query, city)
+            val bias = if (hasPreciseLocationPermission()) lastKnownLocation() else null
+            geocoder.search(query, city, biasLat = bias?.first, biasLon = bias?.second)
                 .onSuccess { results ->
                     ensureActive()
                     _uiState.update { it.copy(searchResults = results, isSearching = false) }
