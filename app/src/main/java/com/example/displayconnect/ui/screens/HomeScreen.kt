@@ -26,8 +26,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -108,6 +110,41 @@ class RecentDestinations(context: Context) {
     }
 }
 
+// ---------- Destinos favoritos (guardados en el movil, mismo patron que recientes) ----------
+
+class FavoriteDestinations(context: Context) {
+    private val prefs = context.getSharedPreferences("favorite_destinations", Context.MODE_PRIVATE)
+
+    fun load(): List<RecentDestination> {
+        val raw = prefs.getString("items", "[]") ?: "[]"
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).map {
+                val o = arr.getJSONObject(it)
+                RecentDestination(o.getString("label"), o.getDouble("lat"), o.getDouble("lon"))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun save(list: List<RecentDestination>) {
+        val arr = JSONArray()
+        list.forEach {
+            arr.put(JSONObject().put("label", it.label).put("lat", it.lat).put("lon", it.lon))
+        }
+        prefs.edit().putString("items", arr.toString()).apply()
+    }
+
+    fun add(item: RecentDestination) {
+        save((listOf(item) + load().filter { it.label != item.label }).take(12))
+    }
+
+    fun remove(label: String) {
+        save(load().filter { it.label != label })
+    }
+}
+
 // ---------- Pantalla Home ----------
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
@@ -135,6 +172,8 @@ fun HomeScreen(
     }
     val recents = remember { RecentDestinations(context.applicationContext) }
     var recentList by remember { mutableStateOf(recents.load()) }
+    val favorites = remember { FavoriteDestinations(context.applicationContext) }
+    var favoriteList by remember { mutableStateOf(favorites.load()) }
     val snackbarHostState = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -305,10 +344,60 @@ fun HomeScreen(
                             ) {
                                 Text("Empezar", fontSize = 20.sp, fontWeight = FontWeight.Bold)
                             }
-                            TextButton(
-                                onClick = { viewModel.updateDestQuery("") },
-                                modifier = Modifier.align(Alignment.CenterHorizontally)
-                            ) { Text("Cambiar destino") }
+                            Row(
+                                modifier = Modifier.align(Alignment.CenterHorizontally),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextButton(onClick = { viewModel.updateDestQuery("") }) { Text("Cambiar destino") }
+                                val isFavorite = favoriteList.any { it.label == uiState.destLabel }
+                                TextButton(onClick = {
+                                    val lat = uiState.destLat.toDoubleOrNull()
+                                    val lon = uiState.destLon.toDoubleOrNull()
+                                    if (lat != null && lon != null) {
+                                        if (isFavorite) favorites.remove(uiState.destLabel)
+                                        else favorites.add(RecentDestination(uiState.destLabel, lat, lon))
+                                        favoriteList = favorites.load()
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Star,
+                                        contentDescription = null,
+                                        tint = if (isFavorite) Warn else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.size(4.dp))
+                                    Text(if (isFavorite) "Quitar de favoritos" else "Guardar en favoritos")
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Favoritos (solo si no hay nada elegido ni resultados)
+                if (!hasDestination && uiState.searchResults.isEmpty() && favoriteList.isNotEmpty()) {
+                    Text("Favoritos", style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    favoriteList.forEach { item ->
+                        val parts = item.label.split(",", limit = 2)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.weight(1f)) {
+                                PlaceCard(
+                                    title = parts.firstOrNull().orEmpty().trim(),
+                                    subtitle = parts.getOrNull(1)?.trim().orEmpty(),
+                                    warning = null,
+                                    onClick = {
+                                        viewModel.selectSearchResult(
+                                            PlaceSearchResult(displayName = item.label, lat = item.lat, lon = item.lon)
+                                        )
+                                    }
+                                )
+                            }
+                            IconButton(onClick = {
+                                favorites.remove(item.label)
+                                favoriteList = favorites.load()
+                            }) {
+                                Icon(Icons.Default.Close, contentDescription = "Quitar favorito",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                         }
                     }
                 }
@@ -469,10 +558,10 @@ private fun PlaceCard(title: String, subtitle: String, warning: String?, onClick
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text(title, fontSize = 17.sp, fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                color = MaterialTheme.colorScheme.onSurface, maxLines = 2)
             if (subtitle.isNotBlank()) {
                 Text(subtitle, style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 4)
             }
             if (warning != null) {
                 Text(warning, style = MaterialTheme.typography.labelSmall, color = Warn)
