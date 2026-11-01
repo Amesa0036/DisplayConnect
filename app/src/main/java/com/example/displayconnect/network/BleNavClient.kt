@@ -149,6 +149,15 @@ class BleNavClient(context: Context) {
 
     private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
         if (connection !== gatt) return
+        // OTA replies may arrive without a trailing newline; accept a bare OTA: chunk as a line.
+        if (otaActive.get()) {
+            val raw = String(bytes, Charsets.UTF_8)
+            if (raw.startsWith("OTA:") && !raw.contains("\n") && !raw.contains("\r")) {
+                boardDecoder.reset()
+                otaLines.trySend(raw)
+                return
+            }
+        }
         for (line in boardDecoder.feed(bytes)) {
             if (otaActive.get() && line.startsWith("OTA:")) { otaLines.trySend(line); continue }
             try {
