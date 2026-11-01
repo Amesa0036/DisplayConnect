@@ -11,10 +11,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -29,14 +32,22 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.displayconnect.R
 import com.example.displayconnect.ui.components.StatsCard
 import com.example.displayconnect.ui.navigation.SettingsTopBar
+import com.example.displayconnect.models.ConnectionState
+import com.example.displayconnect.viewmodel.MainViewModel
 import com.example.displayconnect.viewmodel.SettingsViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
     onNavigateBack: () -> Unit,
-    viewModel: SettingsViewModel = viewModel()
+    viewModel: SettingsViewModel = viewModel(),
+    mainViewModel: MainViewModel = viewModel()
 ) {
+    val mainUiState by mainViewModel.uiState.collectAsState()
+    val boardInfo by mainViewModel.boardInfo.collectAsState()
+    val otaBusy by mainViewModel.otaBusy.collectAsState()
+    val otaProgress by mainViewModel.otaProgress.collectAsState()
+    val otaMessage by mainViewModel.otaMessage.collectAsState()
     val settings by viewModel.settings.collectAsState()
     val stats by viewModel.stats.collectAsState()
     val language by viewModel.language.collectAsState()
@@ -93,6 +104,35 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+
+            SectionCard(title = "Firmware de la placa") {
+                val connected = mainUiState.connectionState == ConnectionState.CONNECTED
+                Text(
+                    "Busca la ultima version en GitHub y la instala por Bluetooth. La placa se reinicia sola al terminar; si algo falla, arranca con su firmware anterior.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Button(
+                    onClick = { mainViewModel.startFirmwareUpdate() },
+                    enabled = connected && boardInfo != null && !mainUiState.isNavigating && !otaBusy
+                ) {
+                    Text(if (otaBusy) "Actualizando..." else "Buscar actualizacion")
+                }
+                if (!connected) {
+                    Text("Conecta la placa primero.", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (otaBusy && otaProgress >= 0) {
+                    LinearProgressIndicator(
+                        progress = { otaProgress / 100f },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("$otaProgress%", style = MaterialTheme.typography.bodySmall)
+                } else if (otaBusy) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                otaMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
             }
 
             StatsCard(stats = stats.copy(resolution = settings.resolutionLabel))
