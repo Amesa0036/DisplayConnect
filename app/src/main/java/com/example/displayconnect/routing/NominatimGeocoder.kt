@@ -17,8 +17,7 @@ class NominatimGeocoder(
         .connectTimeout(8, TimeUnit.SECONDS).readTimeout(10, TimeUnit.SECONDS)
         .callTimeout(12, TimeUnit.SECONDS).build(),
     private val nominatimUrl: String = "https://nominatim.openstreetmap.org/search",
-    private val photonUrl: String = "https://photon.komoot.io/api/",
-    private val overpassUrl: String = "https://overpass-api.de/api/interpreter"
+    private val photonUrl: String = "https://photon.komoot.io/api/"
 ) {
     suspend fun search(query: String, city: String = "", limit: Int = 10,
                        biasLat: Double? = null, biasLon: Double? = null): Result<List<PlaceSearchResult>> =
@@ -84,36 +83,45 @@ class NominatimGeocoder(
                         if (tokens.isEmpty()) return 0
                         val name = norm(r.displayName.substringBefore(','))
                         val rest = norm(r.displayName.substringAfter(',', ""))
-                        return when {
-                            tokens.all { tokenIn(it, name) } -> 0
-                            tokens.any { tokenIn(it, name) } -> 1
-                            tokens.all { tokenIn(it, rest) } -> 2
-                            else -> 3
+                        // A trailing token is often the town ("plaza catalunya sabadell");
+                        // a place named exactly like the core query outranks one that
+                        // only mentions the town.
+                        for (k in tokens.size downTo 1) {
+                            if (tokens.take(k).all { tokenIn(it, name) })
+                                return if (k == tokens.size) 0 else 1
                         }
+                        if (tokens.any { tokenIn(it, name) }) return 2
+                        if (tokens.all { tokenIn(it, rest) }) return 3
+                        return 4
                     }
-                    // Nearby-name fallback via Overpass: providers rank by importance, so a
-                    // small local place (Plaça Catalunya Sabadell) never reaches their top
-                    // results. When nothing good nearby came back (or Nominatim failed),
-                    // query OSM directly for features named like the query around the user.
+                    // Nearby-name fallback: provider importance ranking buries small
+                    // local places (Plaça Catalunya Sabadell, importance 0.045). A
+                    // bounded viewbox around the user forces only in-box matches.
+                    // (An Overpass name-regex fallback was too slow: >60 s in dense
+                    // areas, always timing out the 12 s client budget.)
                     if (biasLat != null && biasLon != null && city.isBlank() && !query.contains(',')) {
                         fun d2(r: PlaceSearchResult): Double {
                             val dLat = r.lat - biasLat
                             val dLon = (r.lon - biasLon) * Math.cos(Math.toRadians(biasLat))
                             return dLat * dLat + dLon * dLon
                         }
-                        // Only a strong match within ~5 km counts as good; a same-named
+                        // Only a name match within ~5 km counts as good; a same-named
                         // place farther away (la Llagosta vs Sabadell) must not stop
                         // the fallback from finding the closer one.
-                        val goodNearby = merged.any { nameScore(it) == 0 && d2(it) < 0.0025 }
-                        val nominatimEmpty = primary.isEmpty()
-                        if (!goodNearby || nominatimEmpty) {
-                            val nameTokens = tokens.filter { it.length >= 2 }
-                            for (take in nameTokens.size downTo 2) {
-                                val rx = buildNameRegex(nameTokens.take(take))
-                                if (rx.isBlank()) break
-                                val ov = attempt { overpassNearby(rx, biasLat, biasLon) }
-                                if (ov.isNotEmpty()) {
-                                    merged = (merged + ov).distinctBy {
+                        val goodNearby = merged.any { nameScore(it) <= 1 && d2(it) < 0.0025 }
+                        if (!goodNearby || primary.isEmpty()) {
+                            val nameToks = queryNorm.split(Regex("[^a-z0-9]+"))
+                                .filter { it.length >= 2 }
+                            val qs = LinkedHashSet<String>()
+                            qs += variant
+                            if (variant != queryNorm) qs += queryNorm
+                            for (take in nameToks.size - 1 downTo 2)
+                                qs += nameToks.take(take).joinToString(" ") { esToCa[it] ?: it }
+                            for (q in qs) {
+                                if (q.isBlank()) continue
+                                val r = attempt { nominatimBounded(q, maxResults, number, biasLat, biasLon) }
+                                if (r.isNotEmpty()) {
+                                    merged = (merged + r).distinctBy {
                                         Triple(norm(it.displayName.substringBefore(',')),
                                             Math.round(it.lat * 500), Math.round(it.lon * 500))
                                     }
@@ -179,6 +187,33 @@ class NominatimGeocoder(
         }
     }
 
+    private suspend fun nominatimBounded(query: String, limit: Int, number: String?,
+                                         lat: Double, lon: Double): List<PlaceSearchResult> {
+        val elapsed = (System.nanoTime() - lastRequestNs) / 1_000_000
+        if (elapsed < 1100) delay(1100 - elapsed)
+        currentCoroutineContext().ensureActive()
+        lastRequestNs = System.nanoTime()
+        val d = 0.135 // ~15 km box, hard-bounded
+        val url = nominatimUrl.toHttpUrl().newBuilder()
+            .addQueryParameter("q", query).addQueryParameter("format", "jsonv2")
+            .addQueryParameter("limit", limit.toString()).addQueryParameter("addressdetails", "1")
+            .addQueryParameter("accept-language", "es,ca,en")
+            .addQueryParameter("viewbox", "${lon - d},${lat + d},${lon + d},${lat - d}")
+            .addQueryParameter("bounded", "1").build()
+        val array = JSONArray(request(url))
+        return buildList {
+            for (i in 0 until array.length()) {
+                val item = array.getJSONObject(i)
+                val house = item.optJSONObject("address")?.optString("house_number", "").orEmpty()
+                val ilat = item.optString("lat").toDoubleOrNull() ?: continue
+                val ilon = item.optString("lon").toDoubleOrNull() ?: continue
+                if (ilat !in -90.0..90.0 || ilon !in -180.0..180.0) continue
+                add(PlaceSearchResult(item.getString("display_name"), ilat, ilon,
+                    number != null && !house.equals(number, true)))
+            }
+        }
+    }
+
     private suspend fun photon(query: String, limit: Int, number: String?,
                                biasLat: Double? = null, biasLon: Double? = null): List<PlaceSearchResult> {
         val builder = photonUrl.toHttpUrl().newBuilder()
@@ -204,31 +239,6 @@ class NominatimGeocoder(
                 if (lat !in -90.0..90.0 || lon !in -180.0..180.0) continue
                 add(PlaceSearchResult(parts.joinToString(", "), lat, lon,
                     number != null && !house.equals(number, true), "OpenStreetMap / Photon"))
-            }
-        }
-    }
-
-    private suspend fun overpassNearby(nameRegex: String, lat: Double, lon: Double): List<PlaceSearchResult> {
-        val ql = "[out:json][timeout:10];nwr[\"name\"~\"" + nameRegex + "\",i]" +
-            "(around:15000," + lat + "," + lon + ");out center 12;"
-        val url = overpassUrl.toHttpUrl().newBuilder().addQueryParameter("data", ql).build()
-        val elements = JSONObject(request(url)).getJSONArray("elements")
-        return buildList {
-            for (i in 0 until elements.length()) {
-                val el = elements.getJSONObject(i)
-                val tags = el.optJSONObject("tags") ?: continue
-                val name = tags.optString("name", "")
-                if (name.isBlank()) continue
-                val center = el.optJSONObject("center")
-                val elLat = if (center != null) center.optDouble("lat", Double.NaN)
-                    else el.optDouble("lat", Double.NaN)
-                val elLon = if (center != null) center.optDouble("lon", Double.NaN)
-                    else el.optDouble("lon", Double.NaN)
-                if (elLat.isNaN() || elLon.isNaN()) continue
-                if (elLat !in -90.0..90.0 || elLon !in -180.0..180.0) continue
-                val cityTag = tags.optString("addr:city", tags.optString("is_in", ""))
-                val display = if (cityTag.isBlank()) name else "$name, $cityTag"
-                add(PlaceSearchResult(display, elLat, elLon, false, "OpenStreetMap / Overpass"))
             }
         }
     }
