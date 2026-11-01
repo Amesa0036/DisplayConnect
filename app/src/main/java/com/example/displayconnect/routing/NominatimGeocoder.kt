@@ -101,7 +101,10 @@ class NominatimGeocoder(
                             val dLon = (r.lon - biasLon) * Math.cos(Math.toRadians(biasLat))
                             return dLat * dLat + dLon * dLon
                         }
-                        val goodNearby = merged.any { nameScore(it) == 0 && d2(it) < 0.02 }
+                        // Only a strong match within ~5 km counts as good; a same-named
+                        // place farther away (la Llagosta vs Sabadell) must not stop
+                        // the fallback from finding the closer one.
+                        val goodNearby = merged.any { nameScore(it) == 0 && d2(it) < 0.0025 }
                         val nominatimEmpty = primary.isEmpty()
                         if (!goodNearby || nominatimEmpty) {
                             val nameTokens = tokens.filter { it.length >= 2 }
