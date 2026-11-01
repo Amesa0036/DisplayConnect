@@ -198,7 +198,9 @@ class BleNavClient(context: Context) {
         while (otaLines.tryReceive().isSuccess) { }
         try {
             val ready = otaExchange(connection, characteristic,
-                "OTA:BEGIN ${bin.size} $sha256Hex", 10_000)
+                "OTA:BEGIN ${bin.size} $sha256Hex", 120_000)
+            if (ready == "OTA:ERR timeout_app")
+                return Result.failure(Exception("Timeout esperando OTA:READY (la placa tarda en borrar la flash)"))
             if (!ready.startsWith("OTA:READY")) return otaFailure(ready)
             var sent = 0
             while (sent < bin.size) {
@@ -215,7 +217,9 @@ class BleNavClient(context: Context) {
                 sent = end
                 onProgress(sent, bin.size)
                 if (sent < bin.size) {
-                    val ack = nextOtaLine(20_000)
+                    val ack = nextOtaLine(30_000)
+                    if (ack == "OTA:ERR timeout_app")
+                        return Result.failure(Exception("Timeout esperando OTA:ACK (enviados $sent de ${bin.size} bytes)"))
                     if (!ack.startsWith("OTA:ACK")) return otaFailure(ack)
                 }
             }
@@ -223,7 +227,9 @@ class BleNavClient(context: Context) {
             while (SystemClock.elapsedRealtime() < deadline) {
                 val line = nextOtaLine(deadline - SystemClock.elapsedRealtime())
                 if (line.startsWith("OTA:OK")) return Result.success(Unit)
-                if (line.startsWith("OTA:ERR") || line == "OTA:ERR timeout") return otaFailure(line)
+                if (line == "OTA:ERR timeout_app")
+                    return Result.failure(Exception("Timeout esperando OTA:OK tras la verificacion"))
+                if (line.startsWith("OTA:ERR")) return otaFailure(line)
             }
             return Result.failure(Exception("La placa no confirma la instalacion"))
         } finally {
@@ -244,7 +250,7 @@ class BleNavClient(context: Context) {
     }
 
     private suspend fun nextOtaLine(timeoutMs: Long): String =
-        withTimeoutOrNull(timeoutMs) { otaLines.receive() } ?: "OTA:ERR timeout"
+        withTimeoutOrNull(timeoutMs) { otaLines.receive() } ?: "OTA:ERR timeout_app"
 
     private fun otaFailure(line: String): Result<Unit> =
         Result.failure(Exception(line.removePrefix("OTA:").replace('_', ' ')))
