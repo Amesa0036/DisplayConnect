@@ -7,6 +7,7 @@ data class RouteStep(
     val street: String,
     val distanceM: Int,
     val endLocation: LatLon,
+    val streetRef: String = "",
     val maneuverType: String = "",
     val maneuverModifier: String = "",
     val maneuverExit: Int? = null,
