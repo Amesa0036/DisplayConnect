@@ -802,7 +802,8 @@ class NavigationEngine(
             speedLimitState = limit.state,
             altitudeWgs84M = altitude,
             altitudeReference = reading.reference, altitudeSource = reading.source,
-            altitudeAccuracyM = if (altitude != null) reading.accuracy?.let { kotlin.math.ceil(it.toDouble()).toInt() } else null
+            altitudeAccuracyM = if (altitude != null) reading.accuracy?.let { kotlin.math.ceil(it.toDouble()).toInt() } else null,
+            profile = settings.routeProfile.storageKey
         )
 
         val json = message.toJson()
