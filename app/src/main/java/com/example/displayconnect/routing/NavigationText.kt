@@ -18,8 +18,21 @@ object NavigationText {
             else -> if (step.maneuverType in listOf("exit roundabout", "exit rotary")) "Exit roundabout" else "Follow route"
         }
         val translated=instruction(canonical,language)
-        return if (language == "es" && step.maneuverType in listOf("roundabout","rotary") && (step.maneuverExit ?: 0)>0)
+        val base = if (language == "es" && step.maneuverType in listOf("roundabout","rotary") && (step.maneuverExit ?: 0)>0)
             "Rotonda: salida ${step.maneuverExit}" else translated
+        return withRoadLabel(base, canonical, step)
+    }
+    /** Maneuvers where naming the road being entered helps (exits, forks, turns). */
+    private val DIRECTIONAL = setOf("right","left","slight_right","slight_left","sharp_right","sharp_left")
+    /** Appends the ref (AP-7) or name of the road being entered; watch shows it before the distance. */
+    private fun withRoadLabel(base: String, canonical: String, step: RouteStep): String {
+        if (canonical !in DIRECTIONAL) return base
+        val ref = step.streetRef.substringBefore(';').trim()
+        val label = if (ref.isNotBlank()) ref else step.street.trim()
+        if (label.isBlank()) return base
+        val room = 63 - base.length - 3 // NavMessage truncates instruction at 63 chars.
+        if (room < 4) return base
+        return base + " · " + label.take(room)
     }
     fun instruction(english: String, language: String): String {
         if (language == "en") return english
