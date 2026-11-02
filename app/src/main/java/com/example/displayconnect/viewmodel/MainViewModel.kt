@@ -168,10 +168,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         viewModelScope.launch {
-            combine(com.example.displayconnect.utils.AppLanguage.language, navClient.connectionState) { lang, connection -> lang to connection }
-                .collect { (lang, connection) ->
+            combine(com.example.displayconnect.utils.AppLanguage.language, navClient.connectionState,
+                settingsRepository.settings) { lang, connection, settings -> Triple(lang, connection, settings) }
+                .collect { (lang, connection, settings) ->
                     if (connection == com.example.displayconnect.models.ConnectionState.CONNECTED) {
                         navClient.sendNavMessage(org.json.JSONObject().put("type", "config").put("lang", lang).toString())
+                        // 0.23: extras de la placa (checks de Ajustes) via boardcfg.
+                        navClient.sendNavMessage(org.json.JSONObject()
+                            .put("type", "boardcfg")
+                            .put("show_clock", settings.boardShowClock)
+                            .put("auto_bright", settings.boardAutoBright)
+                            .put("gps_indicator", settings.boardGpsIndicator)
+                            .toString())
                     }
                 }
         }
