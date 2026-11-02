@@ -33,7 +33,8 @@ data class NavMessage(
     val altitudeWgs84M: Int? = null,
     val altitudeReference: String = "wgs84",
     val altitudeSource: String = "gps",
-    val altitudeAccuracyM: Int? = null
+    val altitudeAccuracyM: Int? = null,
+    val profile: String = "motorcycle"
 
 ) {
     fun toJson(): String {
@@ -43,6 +44,7 @@ data class NavMessage(
         }
         val json = JSONObject()
             .put("type", "nav")
+            .put("profile", profile)
             .put("lat", lat)
             .put("lon", lon)
             .put("bearing", bearing.toDouble())
