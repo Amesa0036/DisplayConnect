@@ -21,10 +21,12 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -106,6 +108,37 @@ fun SettingsScreen(
                 )
             }
 
+            SectionCard(title = "Extras de la placa") {
+                ExtraSwitch("Hora en la placa", settings.boardShowClock) { on ->
+                    viewModel.updateSettings { it.copy(boardShowClock = on) }
+                }
+                ExtraSwitch("Brillo automatico dia/noche", settings.boardAutoBright) { on ->
+                    viewModel.updateSettings { it.copy(boardAutoBright = on) }
+                }
+                ExtraSwitch("Aviso discreto si falla el GPS", settings.boardGpsIndicator) { on ->
+                    viewModel.updateSettings { it.copy(boardGpsIndicator = on) }
+                }
+                ExtraSwitch("Limite de velocidad manual", settings.manualSpeedLimitEnabled) { on ->
+                    viewModel.updateSettings { it.copy(manualSpeedLimitEnabled = on) }
+                }
+                if (settings.manualSpeedLimitEnabled) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(90, 100, 110, 120).forEach { kmh ->
+                            FilterChip(
+                                selected = settings.manualSpeedLimitKmh == kmh,
+                                onClick = { viewModel.updateSettings { it.copy(manualSpeedLimitKmh = kmh) } },
+                                label = { Text("$kmh km/h") }
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "Se mandan a la placa al conectar por Bluetooth.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
             SectionCard(title = "Firmware de la placa") {
                 val connected = mainUiState.connectionState == ConnectionState.CONNECTED
                 Text(
@@ -138,6 +171,14 @@ fun SettingsScreen(
             StatsCard(stats = stats.copy(resolution = settings.resolutionLabel))
             Spacer(modifier = Modifier.height(16.dp))
         }
+    }
+}
+
+@Composable
+private fun ExtraSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text(label, modifier = Modifier.weight(1f))
+        Switch(checked = checked, onCheckedChange = onChange)
     }
 }
 
