@@ -161,6 +161,7 @@ fun HomeScreen(
     val tripProgress by viewModel.tripProgress.collectAsState()
     val gpxJoinOptions by viewModel.gpxJoinOptions.collectAsState()
     val liveNav by TransmissionHub.liveNav.collectAsState()
+    val tripSummary by TransmissionHub.tripSummary.collectAsState()
     val view = LocalView.current
     DisposableEffect(uiState.isNavigating) {
         view.keepScreenOn = uiState.isNavigating
@@ -199,6 +200,21 @@ fun HomeScreen(
                 .then(if (uiState.isNavigating) Modifier else Modifier.verticalScroll(scrollState)),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 0.23: resumen al acabar la ruta
+            tripSummary?.let { summary ->
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Resumen de la ruta", style = MaterialTheme.typography.titleMedium)
+                        Text("%.1f km en %d min".format(summary.distanceM / 1000f, summary.durationS / 60))
+                        Text("Vel. max %d km/h - media %d km/h".format(summary.maxSpeedKmh, summary.avgSpeedKmh))
+                        Text(
+                            "Cerrar",
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable { TransmissionHub.clearTripSummary() }
+                        )
+                    }
+                }
+            }
             // Barra superior: chip Bluetooth + ajustes
             if (!uiState.isNavigating) Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
