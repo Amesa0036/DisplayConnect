@@ -3,6 +3,7 @@ package com.example.displayconnect.storage
 import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.doublePreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -27,7 +28,12 @@ class SettingsRepository(private val context: Context) {
             destQuery = prefs[Keys.DEST_QUERY] ?: "",
             destLabel = prefs[Keys.DEST_LABEL] ?: "",
             destLat = prefs[Keys.DEST_LAT] ?: "",
-            destLon = prefs[Keys.DEST_LON] ?: ""
+            destLon = prefs[Keys.DEST_LON] ?: "",
+            boardShowClock = prefs[Keys.BOARD_SHOW_CLOCK] ?: true,
+            boardAutoBright = prefs[Keys.BOARD_AUTO_BRIGHT] ?: false,
+            boardGpsIndicator = prefs[Keys.BOARD_GPS_INDICATOR] ?: false,
+            manualSpeedLimitEnabled = prefs[Keys.MANUAL_SPEED_LIMIT_ENABLED] ?: false,
+            manualSpeedLimitKmh = prefs[Keys.MANUAL_SPEED_LIMIT_KMH] ?: 120
         )
     }
 
@@ -49,7 +55,12 @@ class SettingsRepository(private val context: Context) {
                 destQuery = prefs[Keys.DEST_QUERY] ?: "",
                 destLabel = prefs[Keys.DEST_LABEL] ?: "",
                 destLat = prefs[Keys.DEST_LAT] ?: "",
-                destLon = prefs[Keys.DEST_LON] ?: ""
+                destLon = prefs[Keys.DEST_LON] ?: "",
+                boardShowClock = prefs[Keys.BOARD_SHOW_CLOCK] ?: true,
+                boardAutoBright = prefs[Keys.BOARD_AUTO_BRIGHT] ?: false,
+                boardGpsIndicator = prefs[Keys.BOARD_GPS_INDICATOR] ?: false,
+                manualSpeedLimitEnabled = prefs[Keys.MANUAL_SPEED_LIMIT_ENABLED] ?: false,
+                manualSpeedLimitKmh = prefs[Keys.MANUAL_SPEED_LIMIT_KMH] ?: 120
             )
             val updated = transform(current)
             prefs[Keys.BLE_DEVICE_ADDRESS] = updated.bleDeviceAddress
@@ -61,6 +72,11 @@ class SettingsRepository(private val context: Context) {
             prefs[Keys.DEST_LABEL] = updated.destLabel
             prefs[Keys.DEST_LAT] = updated.destLat
             prefs[Keys.DEST_LON] = updated.destLon
+            prefs[Keys.BOARD_SHOW_CLOCK] = updated.boardShowClock
+            prefs[Keys.BOARD_AUTO_BRIGHT] = updated.boardAutoBright
+            prefs[Keys.BOARD_GPS_INDICATOR] = updated.boardGpsIndicator
+            prefs[Keys.MANUAL_SPEED_LIMIT_ENABLED] = updated.manualSpeedLimitEnabled
+            prefs[Keys.MANUAL_SPEED_LIMIT_KMH] = updated.manualSpeedLimitKmh
         }
     }
 
@@ -74,5 +90,10 @@ class SettingsRepository(private val context: Context) {
         val DEST_LABEL = stringPreferencesKey("dest_label")
         val DEST_LAT = stringPreferencesKey("dest_lat")
         val DEST_LON = stringPreferencesKey("dest_lon")
+        val BOARD_SHOW_CLOCK = booleanPreferencesKey("board_show_clock")
+        val BOARD_AUTO_BRIGHT = booleanPreferencesKey("board_auto_bright")
+        val BOARD_GPS_INDICATOR = booleanPreferencesKey("board_gps_indicator")
+        val MANUAL_SPEED_LIMIT_ENABLED = booleanPreferencesKey("manual_speed_limit_enabled")
+        val MANUAL_SPEED_LIMIT_KMH = intPreferencesKey("manual_speed_limit_kmh")
     }
 }
