@@ -80,8 +80,9 @@ class OfflineDiskStore(private val root: File) {
             val coordinates = input.points()
             val distance = input.readDouble(); val duration = input.readDouble()
             val steps = List(input.count(100000)) {
+                // streetRef no se persiste en la cache v2: las rutas cacheadas la repiden.
                 RouteStep(input.readUTF(), input.readUTF(), input.readInt(), input.point(),
-                    input.readUTF(), input.readUTF(), input.readInt().takeIf { it > 0 },
+                    "", input.readUTF(), input.readUTF(), input.readInt().takeIf { it > 0 },
                     input.readDouble().takeIf { it >= 0 && it.isFinite() })
             }
             Triple(dest, storedProfile, RouteData(coordinates, steps, distance, duration, input.doubles(), input.doubles()))
