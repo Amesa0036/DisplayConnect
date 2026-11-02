@@ -87,6 +87,7 @@ class OsrmRouteProvider(
                     RouteStep(
                         instruction = instruction,
                         street = step.optString("name", ""),
+                        streetRef = step.optString("ref", ""),
                         distanceM = step.optDouble("distance", 0.0).toInt(),
                         endLocation = LatLon(
                             lat = location.getDouble(1),
