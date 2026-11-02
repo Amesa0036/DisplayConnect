@@ -168,7 +168,9 @@ fun NavMirror(
             textAlign = TextAlign.Center,
             maxLines = 2,
             color = if (warning != null) Warn else Color.White,
-            modifier = Modifier.fillMaxWidth()
+            // 0.23: altura fija de 2 lineas para que el circulo no se mueva
+            // cuando el mensaje cambia de longitud.
+            modifier = Modifier.fillMaxWidth().height(56.dp)
         )
 
         // Ramas de enganche cuando la traza es ambigua: el usuario elige
