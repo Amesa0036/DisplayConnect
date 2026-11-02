@@ -28,6 +28,7 @@ data class NavMessage(
     val maneuverModifier: String = "",
     val maneuverExit: Int? = null,
     val speedKmh: Int? = null,
+    val timeHm: String? = null,
     val speedLimitKmh: Int? = null,
     val speedLimitState: String = "unknown",
     val altitudeWgs84M: Int? = null,
@@ -61,6 +62,7 @@ data class NavMessage(
             .put("lang", language)
             .put("gps_weak", gpsWeak)
             .put("speed_kmh", speedKmh ?: -1)
+            .put("time", timeHm ?: JSONObject.NULL)
             .put("speed_limit_kmh", speedLimitKmh ?: -1)
             .put("speed_limit_state", speedLimitState)
             .put("altitude_m", altitudeWgs84M ?: JSONObject.NULL)
