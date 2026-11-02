@@ -58,6 +58,11 @@ class NavigationEngine(
     private var viewportTopUpJob: Job? = null
     private var rerouteJob: Deferred<Result<RouteData>>? = null
     private val reroutePolicy = ReroutePolicy()
+    private var tripStartMs = 0L
+    private var tripDistanceM = 0.0
+    private var tripMaxSpeedKmh = 0
+    private var tripLastLat = Double.NaN
+    private var tripLastLon = Double.NaN
     private val altitudeEstimator = AltitudeEstimator()
     private val altitudeFilter get() = altitudeEstimator.filter
     var altitudeMonitor: AltitudeMonitor? = null
@@ -114,6 +119,11 @@ class NavigationEngine(
 
     private fun beginNavigation(dest: LatLon, prepared: RouteData?) {
         stopNavigation()
+        tripStartMs = SystemClock.elapsedRealtime()
+        tripDistanceM = 0.0
+        tripMaxSpeedKmh = 0
+        tripLastLat = Double.NaN
+        tripLastLon = Double.NaN
         MapsHtmlHolder.clear()
         TransmissionHub.clearNavigationError()
         destination = dest
@@ -237,6 +247,22 @@ class NavigationEngine(
         gpxJoinCandidates = emptyList()
         gpxInitialJoinPending = false
         lastRawPosition = null
+        // 0.23: resumen de la ruta al terminar (si hubo ruta de verdad).
+        val tripDurationS = ((SystemClock.elapsedRealtime() - tripStartMs) / 1000).toInt()
+        if (tripDistanceM >= 100 && tripDurationS >= 30) {
+            TransmissionHub.publishTripSummary(
+                com.example.displayconnect.utils.TransmissionHub.TripSummary(
+                    distanceM = tripDistanceM.toInt(),
+                    durationS = tripDurationS,
+                    maxSpeedKmh = tripMaxSpeedKmh,
+                    avgSpeedKmh = if (tripDurationS > 0) (tripDistanceM / tripDurationS * 3.6).toInt() else 0
+                )
+            )
+        }
+        tripDistanceM = 0.0
+        tripMaxSpeedKmh = 0
+        tripLastLat = Double.NaN
+        tripLastLon = Double.NaN
         TransmissionHub.updateGpxJoinOptions(emptyList())
         route = null
         progressCalculator = null
@@ -739,6 +765,21 @@ class NavigationEngine(
             raw.elapsedMs, streetWays, covered && fresh && !progress.offRoute &&
                 settings.routeProfile in listOf(com.example.displayconnect.routing.RouteProfile.CAR,
                     com.example.displayconnect.routing.RouteProfile.MOTORCYCLE), settings.routeProfile)
+        // 0.23: limite manual de Ajustes; sustituye al de OSM en la placa.
+        val effectiveLimit = if (settings.manualSpeedLimitEnabled) {
+            com.example.displayconnect.routing.SpeedLimitReading(kmh = settings.manualSpeedLimitKmh, state = "manual")
+        } else limit
+        // 0.23: estadisticas de la ruta para el resumen final.
+        if (!tripLastLat.isNaN() && raw.accuracyM <= 25f) {
+            val dLat = Math.toRadians(update.lat - tripLastLat) * 6371000.0
+            val dLon = Math.toRadians(update.lon - tripLastLon) * 6371000.0 *
+                kotlin.math.cos(Math.toRadians((update.lat + tripLastLat) / 2))
+            val stepM = kotlin.math.hypot(dLat, dLon)
+            if (stepM in 0.5..200.0) tripDistanceM += stepM
+        }
+        tripLastLat = update.lat
+        tripLastLon = update.lon
+        speedKmh?.let { if (it > tripMaxSpeedKmh) tripMaxSpeedKmh = it }
         TransmissionHub.updateMapCoverage(covered)
         if (!covered && downloadJob?.isActive != true && viewportTopUpJob?.isActive != true) {
             // Mid-ride deviation or destination change left the live viewport outside
@@ -798,8 +839,9 @@ class NavigationEngine(
             maneuverModifier = step?.maneuverModifier ?: "",
             maneuverExit = step?.maneuverExit,
             speedKmh = speedKmh,
-            speedLimitKmh = limit.kmh,
-            speedLimitState = limit.state,
+            speedLimitKmh = effectiveLimit.kmh,
+            speedLimitState = effectiveLimit.state,
+            timeHm = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date()),
             altitudeWgs84M = altitude,
             altitudeReference = reading.reference, altitudeSource = reading.source,
             altitudeAccuracyM = if (altitude != null) reading.accuracy?.let { kotlin.math.ceil(it.toDouble()).toInt() } else null,
