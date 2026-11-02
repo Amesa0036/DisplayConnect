@@ -10,6 +10,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 object TransmissionHub {
+
+    data class TripSummary(
+        val distanceM: Int,
+        val durationS: Int,
+        val maxSpeedKmh: Int,
+        val avgSpeedKmh: Int
+    )
     private val _gps = MutableStateFlow(com.example.displayconnect.navigation.GpsStatus())
     val gps = _gps.asStateFlow()
     fun updateGps(state: com.example.displayconnect.navigation.GpsStatus) { _gps.value = state }
@@ -51,6 +58,10 @@ object TransmissionHub {
     val liveNav: StateFlow<NavMessage?> = _liveNav.asStateFlow()
     fun updateLiveNav(message: NavMessage) { _liveNav.value = message }
 
+    private val _tripSummary = MutableStateFlow<TripSummary?>(null)
+    val tripSummary: StateFlow<TripSummary?> = _tripSummary.asStateFlow()
+    fun publishTripSummary(summary: TripSummary) { _tripSummary.value = summary }
+    fun clearTripSummary() { _tripSummary.value = null }
     private val _isNavigating = MutableStateFlow(false)
     val isNavigating: StateFlow<Boolean> = _isNavigating.asStateFlow()
 
