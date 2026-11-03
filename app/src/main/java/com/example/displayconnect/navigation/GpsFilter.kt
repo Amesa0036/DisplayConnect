@@ -41,7 +41,9 @@ class GpsFilter(private val maxSpeedMps: Double) {
             (b.lon - a.lon) * 111320 * cos(Math.toRadians((a.lat + b.lat) / 2)))
 
         fun displayPosition(raw: LatLon, matched: LatLon?, routeDistanceM: Double?, accuracyM: Float,
-            speedMps: Float, bearing: Float, routeBearing: Float?): LatLon {
+            speedMps: Float, bearing: Float, routeBearing: Float?, walking: Boolean = false): LatLon {
+            // A route is a plan, not evidence of the pedestrian's current street.
+            if (walking) return raw
             if (matched == null || routeDistanceM == null || accuracyM > 40) return raw
             val threshold = max(8.0, accuracyM.toDouble()).coerceAtMost(20.0)
             if (routeDistanceM > threshold) return raw
