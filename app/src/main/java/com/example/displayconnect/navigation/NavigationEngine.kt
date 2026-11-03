@@ -722,7 +722,8 @@ class NavigationEngine(
                 "Sem nova rota - confira o app" else "Fora da rota"
         } else null
         val position = GpsFilter.displayPosition(LatLon(raw.lat, raw.lon), progress.matchedPosition,
-            progress.distanceFromRouteM, raw.accuracyM, raw.speedMps, raw.bearing, progress.routeBearing)
+            progress.distanceFromRouteM, raw.accuracyM, raw.speedMps, raw.bearing, progress.routeBearing,
+            walking = settings.routeProfile == com.example.displayconnect.routing.RouteProfile.WALKING)
         val update = raw.copy(lat = position.lat, lon = position.lon)
         // Con conector activo, los totales que ve el usuario (movil y placa)
         // son conector + traza restante; ManeuverSelector sigue usando el
