@@ -291,8 +291,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             .put("show_clock", settings.boardShowClock)
                             .put("auto_bright", settings.boardAutoBright)
                             .put("gps_indicator", settings.boardGpsIndicator)
-                            .put("smart_sleep", settings.boardSmartSleep)
-                            .put("smart_sleep", settings.boardSmartSleep)
                             .toString())
                     }
                 }
