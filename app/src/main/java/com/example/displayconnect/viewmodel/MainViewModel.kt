@@ -58,8 +58,110 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _otaProgress = MutableStateFlow(-1)
     val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
 
+    private val _imuMessage = MutableStateFlow("Sin consultar. Captura solo con firmware de prueba compatible.")
+    val imuMessage: StateFlow<String> = _imuMessage.asStateFlow()
+    private val _imuBusy = MutableStateFlow(false)
+    val imuBusy: StateFlow<Boolean> = _imuBusy.asStateFlow()
+    private val _imuRunning = MutableStateFlow(false)
+    val imuRunning: StateFlow<Boolean> = _imuRunning.asStateFlow()
+    private val _imuSaved = MutableStateFlow(java.io.File(application.filesDir, "imu-captures").listFiles()?.any { it.extension == "csv" } == true)
+    val imuSaved: StateFlow<Boolean> = _imuSaved.asStateFlow()
+    private var imuSession = 0L
+    private fun lastImuFile(): java.io.File? = java.io.File(getApplication<Application>().filesDir, "imu-captures")
+        .listFiles()?.filter { it.extension == "csv" }?.maxByOrNull { it.lastModified() }
+    private fun imuStopLabel(reason: String): String = when(reason) {
+        "fifo_window_full" -> "ventana completa"
+        "fifo_read_error" -> "ERROR DE LECTURA FIFO"
+        "fifo_fill_timeout" -> "llenado incompleto"
+        "user" -> "parada solicitada"
+        "sensor_errors" -> "ERROR DEL SENSOR"
+        "sensor_init_error" -> "ERROR AL INICIAR SENSOR"
+        "never_started" -> "sin iniciar"
+        else -> reason
+    }
+
+    fun refreshImu() = runImu("status")
+    fun startImu() = runImu("start")
+    fun stopImu() = runImu("stop")
+
+    private fun runImu(op: String) {
+        if (_imuBusy.value || _otaBusy.value || navClient.boardBusy.value || _uiState.value.isNavigating) return
+        _imuBusy.value = true
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                // Refresh session before a stop, including after reconnect or app restart.
+                if (op == "stop") imuSession = navClient.imuCommand("status").getOrThrow().getLong("session")
+                // Firmware guard: only start when the board reports fifo IMU support (protocol 2).
+                if (op == "start") {
+                    val st = navClient.imuCommand("status").getOrThrow()
+                    check(st.optInt("protocol", 0) == 2) { "Este firmware no soporta captura IMU" }
+                }
+                val reply = navClient.imuCommand(op, if (op == "stop") imuSession else 0).getOrThrow()
+                imuSession = reply.getLong("session")
+                _imuRunning.value = reply.getBoolean("running")
+                _imuMessage.value = if (_imuRunning.value) "Grabando una ventana de unos 0,5 s. No toques el movil en marcha."
+                    else "Detenida (${imuStopLabel(reply.getString("stop_reason"))}): ${reply.getInt("count")}/${reply.getInt("capacity")}. Descarga antes de apagar la placa."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                _imuMessage.value = "No confirmado: ${e.message}. Consulta el estado antes de repetir."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
+    fun downloadImu() {
+        if (_imuBusy.value || _otaBusy.value || navClient.boardBusy.value || _uiState.value.isNavigating) return
+        _imuBusy.value = true
+        _imuMessage.value = "Parando y descargando. Espera; no apagues la placa."
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                val download = navClient.downloadImuCsv().getOrThrow()
+                val csv = download.csv
+                withContext(Dispatchers.IO) {
+                    val directory = java.io.File(getApplication<Application>().filesDir, "imu-captures")
+                    check(directory.isDirectory || directory.mkdirs()) { "No se pudo crear carpeta privada" }
+                    // Preserve every successful download, even after a reboot reuses a random session id.
+                    val destination = java.io.File(directory, "${download.boardId}-${download.session}-${java.util.UUID.randomUUID()}.csv")
+                    val storage = android.util.AtomicFile(destination)
+                    val stream = storage.startWrite()
+                    try { stream.write(csv.toByteArray(Charsets.UTF_8)); storage.finishWrite(stream)
+                    } catch (e: Exception) { storage.failWrite(stream); throw e }
+                    check(storage.readFully().contentEquals(csv.toByteArray(Charsets.UTF_8))) { "No se pudo verificar el archivo local" }
+                }
+                // Only acknowledge after durable local write + readback, with exact frozen session/count.
+                val ack = navClient.imuCommand("ack_saved", download.session, download.count)
+                _imuRunning.value = false
+                _imuSaved.value = true
+                _imuMessage.value = "CSV guardado y verificado dentro de la app. Usa Guardar copia para elegir carpeta. " + if (ack.isSuccess) "Placa informada del guardado." else "La placa NO confirma el guardado: OTA seguira bloqueada; reintenta descarga."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _imuMessage.value = "Descarga no completada: ${e.message}. No apagues la placa; puedes reintentar."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
+    fun exportImu(uri: Uri?) {
+        if (uri == null || _imuBusy.value) return
+        _imuBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val context = getApplication<Application>()
+                    val bytes = android.util.AtomicFile(lastImuFile() ?: error("No hay archivo guardado")).readFully()
+                    val output = context.contentResolver.openOutputStream(uri, "wt") ?: error("No se pudo abrir destino")
+                    output.use { it.write(bytes); it.flush() }
+                    val verified = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    check(verified != null && verified.contentEquals(bytes)) { "No se pudo verificar la copia; conserva el archivo interno" }
+                }
+                _imuMessage.value = "Copia CSV guardada y verificada en la carpeta elegida."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _imuMessage.value = "Copia no confirmada: ${e.message}. El CSV interno sigue guardado."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
     fun startFirmwareUpdate() {
-        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value) return
+        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _imuRunning.value) return
         if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
             _otaMessage.value = "Conecta la placa primero."
             return
@@ -69,6 +171,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _otaProgress.value = -1
             _otaMessage.value = "Buscando actualizaciones..."
             try {
+                // Query live capture state on every attempt, including app restart/reconnect.
+                val version = navClient.boardFirmwareVersion().getOrNull()
+                if (version?.contains("passive") == true) {
+                    if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                    val capture = navClient.imuCommand("status").getOrThrow()
+                    _imuRunning.value = capture.getBoolean("running")
+                    check(!capture.getBoolean("running") && !capture.getBoolean("unsaved")) { "Para y descarga la captura antes de actualizar" }
+                }
                 val manifest = FirmwareRelease.fetchLatest().getOrElse {
                     _otaMessage.value = "No se pudo consultar la actualizacion: ${it.message}"
                     return@launch
@@ -95,6 +205,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     onSuccess = { "Actualizacion ${manifest.version} instalada. La placa se reinicia sola." },
                     onFailure = { "Error actualizando: ${it.message}. La placa sigue con su firmware anterior." }
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _otaMessage.value = "Actualizacion no iniciada: ${e.message}"
             } finally {
                 _otaBusy.value = false
                 _otaProgress.value = -1
@@ -118,7 +230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runBoardCommand("board_rename", name)
     }
     private fun runBoardCommand(type: String, name: String? = null) {
-        if (_uiState.value.isNavigating || navClient.boardBusy.value) return
+        if (_uiState.value.isNavigating || navClient.boardBusy.value || _imuBusy.value) return
         val expectedAddress = _uiState.value.bleDeviceAddress
         val expectedId = navClient.boardInfo.value?.id
         if (type != "board_info" && expectedId == null) {
@@ -179,6 +291,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             .put("show_clock", settings.boardShowClock)
                             .put("auto_bright", settings.boardAutoBright)
                             .put("gps_indicator", settings.boardGpsIndicator)
+                            .put("smart_sleep", settings.boardSmartSleep)
+                            .put("smart_sleep", settings.boardSmartSleep)
                             .toString())
                     }
                 }
