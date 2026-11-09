@@ -15,8 +15,8 @@ android {
         applicationId = "com.example.displayconnect"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 4
+        versionName = "3.1-passive-log-r3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
