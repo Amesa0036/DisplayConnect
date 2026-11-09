@@ -13,7 +13,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -23,6 +22,13 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -50,6 +56,30 @@ fun SettingsScreen(
     val otaBusy by mainViewModel.otaBusy.collectAsState()
     val otaProgress by mainViewModel.otaProgress.collectAsState()
     val otaMessage by mainViewModel.otaMessage.collectAsState()
+    val imuMessage by mainViewModel.imuMessage.collectAsState()
+    val imuBusy by mainViewModel.imuBusy.collectAsState()
+    val imuRunning by mainViewModel.imuRunning.collectAsState()
+    val imuSaved by mainViewModel.imuSaved.collectAsState()
+    var imuAction by remember { mutableStateOf<String?>(null) }
+    val imuExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/csv")) { uri ->
+        mainViewModel.exportImu(uri)
+    }
+    if (imuAction != null) {
+        AlertDialog(
+            onDismissRequest = { imuAction = null },
+            title = { Text("Solo estando aparcado") },
+            text = { Text("Confirma que estas aparcado y puedes usar el movil con seguridad. Durante la marcha no hay que tocar nada.") },
+            confirmButton = { TextButton(onClick = {
+                val action = imuAction; imuAction = null
+                when (action) {
+                    "start" -> mainViewModel.startImu()
+                    "stop" -> mainViewModel.stopImu()
+                    "download" -> mainViewModel.downloadImu()
+                }
+            }) { Text("Estoy aparcado") } },
+            dismissButton = { TextButton(onClick = { imuAction = null }) { Text("Cancelar") } }
+        )
+    }
     val settings by viewModel.settings.collectAsState()
     val stats by viewModel.stats.collectAsState()
     val language by viewModel.language.collectAsState()
@@ -118,6 +148,12 @@ fun SettingsScreen(
                 ExtraSwitch("Aviso discreto si falla el GPS", settings.boardGpsIndicator) { on ->
                     viewModel.updateSettings { it.copy(boardGpsIndicator = on) }
                 }
+                ExtraSwitch("Suspension por inactividad (placa)", settings.boardSmartSleep) { on ->
+                    viewModel.updateSettings { it.copy(boardSmartSleep = on) }
+                }
+                ExtraSwitch("Suspension por inactividad (placa)", settings.boardSmartSleep) { on ->
+                    viewModel.updateSettings { it.copy(boardSmartSleep = on) }
+                }
                 ExtraSwitch("Limite de velocidad manual", settings.manualSpeedLimitEnabled) { on ->
                     viewModel.updateSettings { it.copy(manualSpeedLimitEnabled = on) }
                 }
@@ -139,6 +175,22 @@ fun SettingsScreen(
                 )
             }
 
+            SectionCard(title = "Prueba pasiva del sensor") {
+                val ready = mainUiState.connectionState == ConnectionState.CONNECTED &&
+                    !mainUiState.isNavigating && !otaBusy && !imuBusy && !mainViewModel.boardBusy.collectAsState().value
+                Text("No controla la pantalla. Inicia aparcado, navega sin tocar nada y descarga al terminar. RAM: se pierde al apagar o reiniciar la placa.")
+                Text("Hasta 12.000 intentos, unos 10 minutos. No es una medida de toda la vibracion. Requiere firmware de prueba compatible.", style = MaterialTheme.typography.bodySmall)
+                Text(imuMessage, style = MaterialTheme.typography.bodyMedium)
+                if (imuBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+                Button(enabled = ready, onClick = { mainViewModel.refreshImu() }) { Text("Consultar estado") }
+                Button(enabled = ready && !imuRunning, onClick = { imuAction = "start" }) { Text("Iniciar captura") }
+                Button(enabled = ready, onClick = { imuAction = "stop" }) { Text("Parar captura") }
+                Button(enabled = ready, onClick = { imuAction = "download" }) { Text("Parar y descargar CSV") }
+                Button(enabled = imuSaved && !imuBusy && !mainUiState.isNavigating, onClick = { imuExport.launch("captura-sensor.csv") }) { Text("Guardar copia del ultimo CSV") }
+                if (mainUiState.isNavigating) Text("Finaliza la navegacion, aparca y vuelve aqui para descargar.")
+                Text("Descargar guarda una copia interna antes de elegir carpeta. No desinstales la app antes de guardar copia. Para otra captura: guarda y comprueba el CSV, luego reinicia la placa.", style = MaterialTheme.typography.bodySmall)
+            }
+
             SectionCard(title = "Firmware de la placa") {
                 val connected = mainUiState.connectionState == ConnectionState.CONNECTED
                 Text(
@@ -148,7 +200,7 @@ fun SettingsScreen(
                 )
                 Button(
                     onClick = { mainViewModel.startFirmwareUpdate() },
-                    enabled = connected && boardInfo != null && !mainUiState.isNavigating && !otaBusy
+                    enabled = connected && boardInfo != null && !mainUiState.isNavigating && !otaBusy && !imuBusy && !imuRunning
                 ) {
                     Text(if (otaBusy) "Actualizando..." else "Buscar actualizacion")
                 }
