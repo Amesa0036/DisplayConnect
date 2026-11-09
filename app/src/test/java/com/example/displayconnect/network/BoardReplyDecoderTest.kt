@@ -9,8 +9,13 @@ class BoardReplyDecoderTest {
     }
     @Test fun rejectsOversizedAndNonAsciiFramesInFull() {
         val d=BoardReplyDecoder()
-        assertEquals(listOf("ok"),d.feed(("x".repeat(1025)+"tail\nok\n").toByteArray()))
+        assertEquals(listOf("ok"),d.feed(("x".repeat(2049)+"tail\nok\n").toByteArray()))
         assertEquals(listOf("ok"),d.feed("bad\u0000tail\nok\n".toByteArray()))
+    }
+    @Test fun acceptsLongImuReplyWithSmallFragments() {
+        val d=BoardReplyDecoder(); val source="x".repeat(1900)+"\n"
+        val frames=source.toByteArray().toList().chunked(20).flatMap { d.feed(it.toByteArray()) }
+        assertEquals(listOf("x".repeat(1900)),frames)
     }
     @Test fun reconnectDropsPartialReply() {
         val d=BoardReplyDecoder();d.feed("old".toByteArray());d.reset()
