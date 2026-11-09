@@ -197,20 +197,31 @@ class BleNavClient(context: Context) {
         val count = frozen.getInt("count")
         val capacity = frozen.getInt("capacity")
         val stopReason = frozen.getString("stop_reason")
-        // Only a full, cleanly finished window is exportable; partial/error windows are not saved as valid CSV.
-        check(stopReason == "fifo_window_full" && count == capacity) { "Captura incompleta ($stopReason: $count/$capacity); repite la captura" }
+        // Legacy2 requires a full window. Protocol3 exports partial/fault sessions as explicit evidence.
+        val protocol = frozen.getInt("protocol")
+        check(ImuExportContract.exportable(protocol, count, capacity, false, stopReason)) { "No hay datos exportables ($stopReason: $count/$capacity)" }
+        val pageSize = if (protocol == 3) frozen.getInt("page_size") else 5
+        check(pageSize in 1..10) { "Tamano de bloque no compatible" }
         val metadata = JSONObject().put("protocol", frozen.getInt("protocol"))
             .put("board_id", expectedBoard.id).put("session", session).put("count", count)
             .put("capacity", frozen.getInt("capacity")).put("firmware", frozen.getString("firmware"))
             .put("started_utc_phone", frozen.getString("started_utc")).put("stop_reason", frozen.getString("stop_reason"))
             .put("no_data", frozen.getLong("no_data")).put("duplicates", frozen.getLong("duplicates"))
             .put("errors", frozen.getLong("errors")).put("late_reads", frozen.getLong("late_reads"))
-            .put("odr_hz_nominal", frozen.getInt("odr_hz_nominal")).put("fs_g_nominal", frozen.getInt("fs_g_nominal"))
+            .put("odr_hz_nominal", frozen.getDouble("odr_hz_nominal")).put("fs_g_nominal", frozen.getInt("fs_g_nominal"))
             .put("period_ms_nominal", frozen.getInt("period_ms_nominal")).put("window_ms_measured", frozen.getLong("window_end_ms") - frozen.getLong("window_start_ms"))
             .put("restore_failed", frozen.getBoolean("restore_failed"))
-            .put("app_version", "3.0-passive-dev")
+            .put("app_version", "3.0-passive-log-r3")
+        if (protocol == 3) {
+            for (key in listOf("mode", "continuity", "duration_limit_ms", "quality_flags", "rail_samples", "missing_samples", "tick_discontinuities", "max_host_gap_ms", "page_size")) {
+                check(frozen.has(key)) { "Falta metadato $key" }; metadata.put(key, frozen.get(key))
+            }
+            metadata.put("sample_time_basis", "host_read_complete_ms_not_sensor_time")
+                .put("sensor_tick_basis", "24bit_sample_counter_not_ms")
+                .put("partial_or_fault_recording", stopReason != "duration_limit" || frozen.getInt("errors") > 0 || frozen.getBoolean("restore_failed"))
+        }
         val csv = StringBuilder("# " + metadata.toString() + "\n")
-        csv.append("sample_ms_nominal,sensor_tick_none,status,ax_raw,ay_raw,az_raw,read_us_unused,fifo_status_prefreeze\n")
+        csv.append(ImuExportContract.header(protocol)).append('\n')
         var offset = 0
         var written = 0
         while (offset < count) {
@@ -220,7 +231,7 @@ class BleNavClient(context: Context) {
             val reply = page ?: error("No se pudo descargar el bloque $offset; la placa conserva la captura")
             check(reply.getLong("session") == session && reply.getInt("count") == count && reply.getInt("offset") == offset) { "Bloque de otra captura" }
             val rows = reply.getJSONArray("rows")
-            check(rows.length() == minOf(5, count - offset)) { "Bloque incompleto" }
+            check(rows.length() == minOf(pageSize, count - offset)) { "Bloque incompleto" }
             for (i in 0 until rows.length()) {
                 val row = rows.getJSONArray(i)
                 check(row.length() == 8) { "Fila no valida" }
