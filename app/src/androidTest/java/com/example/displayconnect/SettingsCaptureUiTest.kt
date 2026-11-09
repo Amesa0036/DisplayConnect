@@ -20,11 +20,18 @@ class SettingsCaptureUiTest {
         File(context.getExternalFilesDir(null), "settings-passive-info.png").outputStream().use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)
         }
+        retain("settings-passive-info.png", context)
         compose.onNodeWithText("Parar y descargar CSV").performScrollTo().assertIsDisplayed()
         compose.onNodeWithText("Iniciar captura").assertExists()
         compose.waitForIdle()
         File(context.getExternalFilesDir(null), "settings-passive-buttons.png").outputStream().use {
             compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)
         }
+        retain("settings-passive-buttons.png", context)
+    }
+    private fun retain(name: String, context: android.content.Context) {
+        val source=File(context.getExternalFilesDir(null), name).absolutePath
+        val fd=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cp $source /data/local/tmp/$name")
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
     }
 }
