@@ -80,8 +80,8 @@ jobs:
           script: |
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.SettingsCaptureUiTest
             mkdir -p ui-evidence
-            adb pull /sdcard/Android/data/com.example.displayconnect/files/settings-passive-info.png ui-evidence/
-            adb pull /sdcard/Android/data/com.example.displayconnect/files/settings-passive-buttons.png ui-evidence/
+            adb pull /data/local/tmp/settings-passive-info.png ui-evidence/
+            adb pull /data/local/tmp/settings-passive-buttons.png ui-evidence/
 
       - name: Retain UI diagnostics
         if: always()
