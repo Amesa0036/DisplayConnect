@@ -67,8 +67,8 @@ fun SettingsScreen(
     if (imuAction != null) {
         AlertDialog(
             onDismissRequest = { imuAction = null },
-            title = { Text("Solo estando aparcado") },
-            text = { Text("Confirma que estas aparcado y puedes usar el movil con seguridad. Durante la marcha no hay que tocar nada.") },
+            title = { Text("Solo para prueba en mesa") },
+            text = { Text("Confirma que la placa esta sobre la mesa y no estas navegando. Esta version solo registra datos; no controla la pantalla.") },
             confirmButton = { TextButton(onClick = {
                 val action = imuAction; imuAction = null
                 when (action) {
@@ -76,7 +76,7 @@ fun SettingsScreen(
                     "stop" -> mainViewModel.stopImu()
                     "download" -> mainViewModel.downloadImu()
                 }
-            }) { Text("Estoy aparcado") } },
+            }) { Text("Esta en la mesa") } },
             dismissButton = { TextButton(onClick = { imuAction = null }) { Text("Cancelar") } }
         )
     }
@@ -172,8 +172,8 @@ fun SettingsScreen(
             SectionCard(title = "Prueba pasiva del sensor") {
                 val ready = mainUiState.connectionState == ConnectionState.CONNECTED &&
                     !mainUiState.isNavigating && !otaBusy && !imuBusy && !mainViewModel.boardBusy.collectAsState().value
-                Text("No controla la pantalla. Inicia aparcado, navega sin tocar nada y descarga al terminar. RAM: se pierde al apagar o reiniciar la placa.")
-                Text("Hasta 12.000 intentos, unos 10 minutos. No es una medida de toda la vibracion. Requiere firmware de prueba compatible.", style = MaterialTheme.typography.bodySmall)
+                Text("Prueba solo en mesa, sin navegacion. No controla la pantalla. RAM: se pierde al apagar o reiniciar la placa.")
+                Text("Firmware r3: hasta 3 minutos y 12.000 filas, acelerometro a 62,5 Hz nominales. Prueba solo en mesa, sin navegacion. No apaga la pantalla. Guarda datos crudos y contadores de huecos; no mide toda la vibracion. Firmware anterior: solo 0,5 s.", style = MaterialTheme.typography.bodySmall)
                 Text(imuMessage, style = MaterialTheme.typography.bodyMedium)
                 if (imuBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                 Button(enabled = ready, onClick = { mainViewModel.refreshImu() }) { Text("Consultar estado") }
