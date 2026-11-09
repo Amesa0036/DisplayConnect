@@ -148,12 +148,6 @@ fun SettingsScreen(
                 ExtraSwitch("Aviso discreto si falla el GPS", settings.boardGpsIndicator) { on ->
                     viewModel.updateSettings { it.copy(boardGpsIndicator = on) }
                 }
-                ExtraSwitch("Suspension por inactividad (placa)", settings.boardSmartSleep) { on ->
-                    viewModel.updateSettings { it.copy(boardSmartSleep = on) }
-                }
-                ExtraSwitch("Suspension por inactividad (placa)", settings.boardSmartSleep) { on ->
-                    viewModel.updateSettings { it.copy(boardSmartSleep = on) }
-                }
                 ExtraSwitch("Limite de velocidad manual", settings.manualSpeedLimitEnabled) { on ->
                     viewModel.updateSettings { it.copy(manualSpeedLimitEnabled = on) }
                 }
