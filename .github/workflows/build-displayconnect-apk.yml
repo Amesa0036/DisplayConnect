@@ -63,6 +63,28 @@ jobs:
           echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
           ./gradlew --no-daemon :app:signingReport :app:testDebugUnitTest :app:assembleDebug
 
+      - name: Render actual settings in Android emulator (bench UI verification)
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager 'emulator' 'system-images;android-35;google_apis;x86_64'
+          echo no | avdmanager create avd --force --name bench35 --package 'system-images;android-35;google_apis;x86_64'
+          sudo chmod 666 /dev/kvm
+          "$ANDROID_HOME/emulator/emulator" -avd bench35 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          for i in $(seq 1 120); do
+            if adb shell getprop sys.boot_completed 2>/dev/null | grep -q 1; then break; fi
+            sleep 2
+          done
+          test "$(adb shell getprop sys.boot_completed | tr -d '\r')" = 1
+          adb shell settings put global window_animation_scale 0
+          adb shell settings put global transition_animation_scale 0
+          adb shell settings put global animator_duration_scale 0
+          ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.SettingsCaptureUiTest
+          mkdir -p ui-evidence
+          adb pull /sdcard/Android/data/com.example.displayconnect/files/settings-passive-info.png ui-evidence/
+          adb pull /sdcard/Android/data/com.example.displayconnect/files/settings-passive-buttons.png ui-evidence/
+          adb emu kill
+
       - name: Sign final APK explicitly and enforce certificate match
         shell: bash
         run: |
@@ -92,7 +114,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: displayconnect-mapa-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            ui-evidence/
+            app/build/test-results/testDebugUnitTest/
+            app/build/outputs/androidTest-results/connected/
+
           if-no-files-found: error
           retention-days: 14
 
