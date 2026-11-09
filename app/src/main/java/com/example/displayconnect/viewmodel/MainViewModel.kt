@@ -70,7 +70,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun lastImuFile(): java.io.File? = java.io.File(getApplication<Application>().filesDir, "imu-captures")
         .listFiles()?.filter { it.extension == "csv" }?.maxByOrNull { it.lastModified() }
     private fun imuStopLabel(reason: String): String = when(reason) {
-        "fifo_window_full" -> "ventana completa"
+        "fifo_window_full" -> "ventana completa (firmware anterior)"
+        "duration_limit" -> "fin de los 3 minutos"
+        "capacity_limit" -> "limite de memoria"
+        "sensor_stale" -> "SENSOR SIN DATOS FRESCOS"
         "fifo_read_error" -> "ERROR DE LECTURA FIFO"
         "fifo_fill_timeout" -> "llenado incompleto"
         "user" -> "parada solicitada"
@@ -92,15 +95,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
                 // Refresh session before a stop, including after reconnect or app restart.
                 if (op == "stop") imuSession = navClient.imuCommand("status").getOrThrow().getLong("session")
-                // Firmware guard: only start when the board reports fifo IMU support (protocol 2).
+                // Protocol 2 single-window legacy and protocol 3 bounded direct logger.
                 if (op == "start") {
                     val st = navClient.imuCommand("status").getOrThrow()
-                    check(st.optInt("protocol", 0) == 2) { "Este firmware no soporta captura IMU" }
+                    check(st.optInt("protocol", 0) in 2..3) { "Este firmware no soporta captura IMU" }
                 }
                 val reply = navClient.imuCommand(op, if (op == "stop") imuSession else 0).getOrThrow()
                 imuSession = reply.getLong("session")
                 _imuRunning.value = reply.getBoolean("running")
-                _imuMessage.value = if (_imuRunning.value) "Grabando una ventana de unos 0,5 s. No toques el movil en marcha."
+                _imuMessage.value = if (_imuRunning.value) "Grabando: hasta 3 minutos, solo en mesa. No apagues la placa. Consulta estado o para cuando termines."
                     else "Detenida (${imuStopLabel(reply.getString("stop_reason"))}): ${reply.getInt("count")}/${reply.getInt("capacity")}. Descarga antes de apagar la placa."
             } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Exception) {
