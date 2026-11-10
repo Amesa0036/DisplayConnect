@@ -16,6 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Restore hash-checked shadow source overlay (no private recordings)
+        run: |
+          python3 - <<'PYSHADOW'
+          import json,hashlib
+          from pathlib import Path
+          for item in json.loads(Path('shadow-app-source.json').read_text())['files']:
+              p=Path(item['path'])
+              assert not p.is_absolute() and '..' not in p.parts and str(p).startswith('app/')
+              data=item['content'].encode()
+              assert hashlib.sha256(data).hexdigest()==item['sha256']
+              p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+          PYSHADOW
+
       - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
@@ -123,7 +136,7 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: displayconnect-mapa-debug
+          name: NO-INSTALAR-shadow-diagnostic-apk-check
           path: |
             app/build/outputs/apk/debug/app-debug.apk
             ui-evidence/
@@ -131,7 +144,7 @@ jobs:
             app/build/outputs/androidTest-results/connected/
 
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 1
 
       - name: Remove signing key from runner
         if: always()
