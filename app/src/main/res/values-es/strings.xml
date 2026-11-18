@@ -83,4 +83,8 @@
     <string name="gps_weak">GPS débil o desactualizado - se mantiene la última posición fiable</string>
     <string name="gps_accuracy">Precisión del GPS: ±%1$d m</string>
     <string name="error_precise_location">Activa la ubicación precisa en los permisos de la app para navegar.</string>
+    <string name="setting_gps_source">Fuente de posición</string>
+    <string name="gps_source_phone">GPS del móvil</string>
+    <string name="gps_source_hecate">GPS de Hecate</string>
+    <string name="gps_weak_hecate">Señal GPS de Hecate débil - se mantiene la última posición fiable; busca cielo despejado o cambia al GPS del móvil en ajustes</string>
 </resources>
