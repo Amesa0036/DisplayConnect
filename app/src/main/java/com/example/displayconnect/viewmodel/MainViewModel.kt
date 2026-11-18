@@ -51,12 +51,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _boardMessage = MutableStateFlow<String?>(null)
     val boardMessage: StateFlow<String?> = _boardMessage.asStateFlow()
 
+    private val _gnssProbeMessage = MutableStateFlow<String?>(null)
+    val gnssProbeMessage: StateFlow<String?> = _gnssProbeMessage.asStateFlow()
+
     private val _otaMessage = MutableStateFlow<String?>(null)
     val otaMessage: StateFlow<String?> = _otaMessage.asStateFlow()
     private val _otaBusy = MutableStateFlow(false)
     val otaBusy: StateFlow<Boolean> = _otaBusy.asStateFlow()
     private val _otaProgress = MutableStateFlow(-1)
     val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
+
+    /** Sondeo real de capacidad GNSS de la placa antes de seleccionar HECATE;
+     *  sin sondeo no se habilita la fuente (nada de suposiciones por modelo). */
+    fun probeAndSelectHecateGnss(onAvailable: () -> Unit) {
+        viewModelScope.launch {
+            _gnssProbeMessage.value = null
+            val reply = navClient.gnssCommand("status").getOrNull()
+            if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
+                onAvailable()
+            } else {
+                _gnssProbeMessage.value = when (com.example.displayconnect.utils.AppLanguage.language.value) {
+                    "en" -> "This board does not offer its own GPS (firmware without gnss_diag or board not connected)."
+                    "es" -> "Esta placa no ofrece GPS propio para navegar (falta firmware con lectura completa o placa no conectada)."
+                    else -> "Esta placa nao oferece GPS proprio (firmware sem gnss_diag ou placa nao conectada)."
+                }
+            }
+        }
+    }
 
     fun startFirmwareUpdate() {
         if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value) return
