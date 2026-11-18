@@ -31,12 +31,12 @@ data class LocationUpdate(
     val altitudeMslAccuracyM: Float? = null
 )
 
-class LocationTracker(private val context: Context) {
+class LocationTracker(private val context: Context) : PositionSource {
 
     private val fusedClient = LocationServices.getFusedLocationProviderClient(context)
 
     @SuppressLint("MissingPermission")
-    fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = callbackFlow {
+    override fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = callbackFlow {
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, intervalMs)
             .setMinUpdateIntervalMillis(intervalMs)
             .setMaxUpdateAgeMillis(0)
