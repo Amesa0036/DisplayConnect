@@ -10,7 +10,7 @@ data class GnssDiagnostic(
     val receivedElapsedMs: Long
 ) {
     fun display(now: Long): String = if (now - receivedElapsedMs > 4000 || now < receivedElapsedMs)
-        "Consulta caducada. Pulsa Consultar estado para una lectura actual. No se usa para navegar." else message
+        "Consulta caducada. Pulsa Consultar estado para una lectura actual. Esta consulta no cambia la fuente de navegación." else message
 
     companion object {
         fun parse(json: JSONObject, now: Long): GnssDiagnostic {
@@ -47,7 +47,7 @@ data class GnssDiagnostic(
                 json.getLong(it).also { n -> check(n in 0..4294967295L) }
             }
             val link = if (json.getBoolean("responded")) "Módulo respondió por I2C." else "Sin respuesta confirmada del módulo."
-            val message = "$state\n$link$position\nNMEA: ${counters["sentences"]} · GGA: ${counters["gga_count"]} · errores I2C: ${counters["i2c_errors"]} · checksum: ${counters["checksum_errors"]}\nNo sustituye el GPS del móvil ni controla la ruta."
+            val message = "$state\n$link$position\nNMEA: ${counters["sentences"]} · GGA: ${counters["gga_count"]} · errores I2C: ${counters["i2c_errors"]} · checksum: ${counters["checksum_errors"]}\nEste panel no cambia la fuente elegida en Ajustes ni controla la ruta."
             return GnssDiagnostic(running, valid, message, now)
         }
     }
