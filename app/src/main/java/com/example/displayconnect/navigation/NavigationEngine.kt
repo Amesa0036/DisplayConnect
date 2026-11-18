@@ -41,7 +41,8 @@ import kotlin.math.sqrt
 
 class NavigationEngine(
     private val scope: CoroutineScope,
-    private val locationTracker: LocationTracker,
+    private val locationTracker: PositionSource,
+    private val boardGnss: Boolean = false,
     private val routeProvider: OsrmRouteProvider,
     private val offlineMap: OfflineMapRepository,
     private val navClient: BleNavClient,
@@ -163,7 +164,7 @@ class NavigationEngine(
                     while (true) {
                         delay(1500)
                         if (SystemClock.elapsedRealtime() - lastAcceptedMs > 5000) {
-                            TransmissionHub.updateGps(TransmissionHub.gps.value.copy(weak = true))
+                            TransmissionHub.updateGps(TransmissionHub.gps.value.copy(weak = true, hecate = boardGnss))
                             sendWeakGpsFrame()
                         }
                     }
@@ -463,7 +464,7 @@ class NavigationEngine(
             update.speedMps, update.bearing, update.elapsedMs), SystemClock.elapsedRealtime()) == true
         if (accepted) lastAcceptedMs = update.elapsedMs
         if (accepted || update.elapsedMs > lastAcceptedMs || SystemClock.elapsedRealtime() - lastAcceptedMs > 5000) {
-            TransmissionHub.updateGps(GpsStatus(update.accuracyM.takeIf { it.isFinite() }, lastAcceptedMs, !accepted))
+            TransmissionHub.updateGps(GpsStatus(update.accuracyM.takeIf { it.isFinite() }, lastAcceptedMs, !accepted, boardGnss))
         }
         Log.d("DisplayConnectGPS", "accepted=$accepted accuracy=${update.accuracyM} ageMs=${SystemClock.elapsedRealtime() - update.elapsedMs}")
         return accepted
