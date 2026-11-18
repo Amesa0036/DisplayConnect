@@ -128,6 +128,7 @@ class NavigationForegroundService : Service() {
     private suspend fun selectPositionSource(app: DisplayConnectApp): PositionSource? {
         val settings = app.settingsRepository.settings.first()
         if (settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE) return LocationTracker(this)
+        if (app.navClient.boardInfo.value == null) app.navClient.boardCommand("board_info")
         val reply = app.navClient.gnssRawCommand("status").getOrNull()
         if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
             return HecateGnssSource(app.navClient)
