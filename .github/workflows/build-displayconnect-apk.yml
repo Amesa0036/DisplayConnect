@@ -63,6 +63,33 @@ jobs:
           echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
           ./gradlew --no-daemon :app:signingReport :app:testDebugUnitTest :app:assembleDebug
 
+      - name: Enable KVM for UI test
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Render GPS source selector in Android emulator (bench UI verification)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 600
+          script: |
+            mkdir -p ui-evidence
+            trap 'for image in /data/local/tmp/settings-gnss-source.png /data/local/tmp/settings-gnss-probe-fail.png; do adb pull "$image" ui-evidence/ || true; done' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.GnssSourceSelectorUiTest
+
+      - name: Retain UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-evidence
+          path: ui-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Sign final APK explicitly and enforce certificate match
         shell: bash
         run: |
