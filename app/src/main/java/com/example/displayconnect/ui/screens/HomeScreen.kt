@@ -246,10 +246,11 @@ fun HomeScreen(
             }
 
             if (!uiState.isNavigating) OutlinedButton(onClick = onOpenClassic) {
-                Text("Elegir o configurar mi placa")
+                Text("Placa y datos")
             }
 
             if (uiState.isNavigating) {
+                TextButton(onClick = onOpenClassic) { Text("Placa y datos") }
                 Text(altitudeStatus.message, style = MaterialTheme.typography.bodySmall)
                 // ---------- Navegando: espejo de la placa ----------
                 NavMirror(
@@ -451,7 +452,7 @@ fun HomeScreen(
                     onClick = onOpenClassic,
                     modifier = Modifier.align(Alignment.CenterHorizontally)
                 ) {
-                    Text("Modo clásico (Bluetooth, coordenadas)",
+                    Text("Placa, sensores y rutas avanzadas",
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(Modifier.height(8.dp))
