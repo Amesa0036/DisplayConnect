@@ -160,7 +160,10 @@ class BleNavClient(context: Context) {
     }
 
     suspend fun gnssCommand(op: String): Result<GnssDiagnostic> =
-        gnssRawCommand(op).mapCatching { GnssDiagnostic.parse(it, SystemClock.elapsedRealtime()) }
+        gnssRawCommand(op).mapCatching {
+            check(it.optBoolean("ok", false)) { it.optString("error", "Consulta rechazada") }
+            GnssDiagnostic.parse(it, SystemClock.elapsedRealtime())
+        }
 
     /** Explicit, bounded GNSS diagnostic query. Never enters the NAV channel. */
     suspend fun gnssRawCommand(op: String): Result<JSONObject> = boardMutex.withLock {
@@ -184,7 +187,6 @@ class BleNavClient(context: Context) {
             check(written) { "No se pudo enviar la consulta GPS" }
             val response = withTimeoutOrNull(5000) { reply.await() } ?: error("Sin confirmación. Requiere firmware con diagnóstico LC76G")
             check(connection === gatt && address == targetAddress && response.getString("board_id") == board.id) { "La placa ha cambiado" }
-            check(response.getBoolean("ok")) { response.optString("error", "Consulta rechazada") }
             Result.success(response)
         } catch (e: kotlinx.coroutines.CancellationException) { throw e
         } catch (e: Exception) { Result.failure(e)
