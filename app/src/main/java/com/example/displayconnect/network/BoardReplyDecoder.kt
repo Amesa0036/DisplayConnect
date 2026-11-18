@@ -13,7 +13,7 @@ class BoardReplyDecoder {
                 if (!discarding && line.isNotEmpty()) result.add(line.toString())
                 line.clear(); discarding = false
             } else if (!discarding) {
-                if (c.code !in 32..126 || line.length >= 1024) { line.clear(); discarding = true }
+                if (c.code !in 32..126 || line.length >= 2048) { line.clear(); discarding = true }
                 else line.append(c)
             }
         }
