@@ -127,14 +127,14 @@ fun MainScreen(
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("GPS propio Hecate · prueba", style = MaterialTheme.typography.titleMedium)
-                        Text("Solo en parado, antena GNSS conectada y vista al cielo. Máximo 3 minutos. No cambia la posición del mapa ni sustituye el GPS del móvil.", style = MaterialTheme.typography.bodySmall)
+                        Text("Solo en parado, antena GNSS conectada y vista al cielo. Este panel no cambia la fuente de posición elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
                         Text(if (!isConnected) "Placa desconectada. Sin lectura actual." else gnss?.display(gnssNow) ?: gnssMessage, style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = { viewModel.gnssCommand("start") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating && (boardInfo == null || boardInfo?.hardwareModel == "waveshare_s3_175g")) { Text("Iniciar prueba GPS") }
                             OutlinedButton(onClick = { viewModel.gnssCommand("status") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Consultar estado GPS") }
                             OutlinedButton(onClick = { viewModel.gnssCommand("stop") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Parar prueba GPS") }
                         }
-                        Text("Al navegar, desconectar o caducar la sesión, la lectura se detiene. No se reinicia ni se reconfigura el módulo. Requiere firmware de prueba compatible.", style = MaterialTheme.typography.bodySmall)
+                        Text("Los controles de esta prueba no se usan durante la navegación. La sesión se detiene al desconectar o caducar las consultas. No se reinicia ni se reconfigura el módulo. Requiere firmware compatible.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
