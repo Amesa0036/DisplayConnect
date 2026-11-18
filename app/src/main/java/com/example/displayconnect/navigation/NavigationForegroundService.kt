@@ -65,18 +65,25 @@ class NavigationForegroundService : Service() {
 
         val app = application as DisplayConnectApp
         navigationEngine?.stopNavigation()
-        val engine = NavigationEngine(
-            scope = serviceScope,
-            locationTracker = LocationTracker(this),
-            routeProvider = OsrmRouteProvider(),
-            offlineMap = OfflineMapRepository(File(filesDir, "offline-map-v1"), OverpassStreetProvider()),
-            navClient = app.navClient,
-            settingsProvider = { app.settingsRepository.settings.first() },
-            onNavigationEnded = { stopNavigationService() }
-        )
-        engine.altitudeMonitor=app.altitudeMonitor
-        navigationEngine = engine
-        engine.startNavigation(destLat, destLon)
+        serviceScope.launch {
+            val source = selectPositionSource(app) ?: return@launch
+            val engine = NavigationEngine(
+                scope = serviceScope,
+                locationTracker = source,
+                routeProvider = OsrmRouteProvider(),
+                offlineMap = OfflineMapRepository(File(filesDir, "offline-map-v1"), OverpassStreetProvider()),
+                navClient = app.navClient,
+                settingsProvider = { app.settingsRepository.settings.first() },
+                onNavigationEnded = { stopNavigationService() },
+                boardGnss = source is HecateGnssSource
+            )
+            engine.altitudeMonitor=app.altitudeMonitor
+            navigationEngine = engine
+            activeGpsSource = if (source is HecateGnssSource) com.example.displayconnect.models.GpsSource.HECATE
+                else com.example.displayconnect.models.GpsSource.PHONE
+            engine.startNavigation(destLat, destLon)
+            watchGpsSourceSwitch(app, intent)
+        }
     }
 
     /** Arranca con la ruta GPX preparada que dejo el ViewModel en PendingRouteHolder. */
@@ -94,21 +101,67 @@ class NavigationForegroundService : Service() {
 
         val app = application as DisplayConnectApp
         navigationEngine?.stopNavigation()
-        val engine = NavigationEngine(
-            scope = serviceScope,
-            locationTracker = LocationTracker(this),
-            routeProvider = OsrmRouteProvider(),
-            offlineMap = OfflineMapRepository(File(filesDir, "offline-map-v1"), OverpassStreetProvider()),
-            navClient = app.navClient,
-            settingsProvider = { app.settingsRepository.settings.first() },
-            onNavigationEnded = { stopNavigationService() }
-        )
-        engine.altitudeMonitor=app.altitudeMonitor
-        navigationEngine = engine
-        engine.startNavigationWithRoute(prepared, last.lat, last.lon)
+        serviceScope.launch {
+            val source = selectPositionSource(app) ?: return@launch
+            val engine = NavigationEngine(
+                scope = serviceScope,
+                locationTracker = source,
+                routeProvider = OsrmRouteProvider(),
+                offlineMap = OfflineMapRepository(File(filesDir, "offline-map-v1"), OverpassStreetProvider()),
+                navClient = app.navClient,
+                settingsProvider = { app.settingsRepository.settings.first() },
+                onNavigationEnded = { stopNavigationService() },
+                boardGnss = source is HecateGnssSource
+            )
+            engine.altitudeMonitor=app.altitudeMonitor
+            navigationEngine = engine
+            activeGpsSource = if (source is HecateGnssSource) com.example.displayconnect.models.GpsSource.HECATE
+                else com.example.displayconnect.models.GpsSource.PHONE
+            engine.startNavigationWithRoute(prepared, last.lat, last.lon)
+            // Con ruta GPX el cambio de fuente se aplica al volver a iniciar la
+            // navegacion (rehacer la traza en curso seria destructivo).
+        }
+    }
+
+    /** Elige la fuente de posicion segun ajustes. Con HECATE no hay repliegue
+     *  silencioso: si la placa no ofrece gnss_diag se avisa y no se navega. */
+    private suspend fun selectPositionSource(app: DisplayConnectApp): PositionSource? {
+        val settings = app.settingsRepository.settings.first()
+        if (settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE) return LocationTracker(this)
+        val reply = app.navClient.gnssRawCommand("status").getOrNull()
+        if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
+            return HecateGnssSource(app.navClient)
+        }
+        com.example.displayconnect.utils.TransmissionHub.navigationFailed(
+            when (com.example.displayconnect.utils.AppLanguage.language.value) {
+                "en" -> "This board does not offer its own GPS. Select phone GPS or update the board firmware."
+                "es" -> "Esta placa no ofrece GPS propio para navegar. Elige el GPS del movil en ajustes o actualiza la placa."
+                else -> "Esta placa nao oferece GPS proprio. Escolha o GPS do telefone nas definicoes ou atualize a placa."
+            })
+        stopSelf()
+        return null
+    }
+
+    private var activeGpsSource: com.example.displayconnect.models.GpsSource = com.example.displayconnect.models.GpsSource.PHONE
+    private var sourceWatchJob: kotlinx.coroutines.Job? = null
+
+    /** Cambio manual de fuente en ajustes durante la navegacion: reinicio
+     *  explicito con la fuente elegida (lo pidio el usuario; no es un fallback
+     *  silencioso). Solo rutas por destino; las GPX no se rehacen solas. */
+    private fun watchGpsSourceSwitch(app: DisplayConnectApp, intent: Intent) {
+        sourceWatchJob?.cancel()
+        sourceWatchJob = serviceScope.launch {
+            app.settingsRepository.settings.collect { s ->
+                if (s.gpsSource != activeGpsSource && navigationEngine != null) {
+                    sourceWatchJob?.cancel()
+                    handleStart(intent)
+                }
+            }
+        }
     }
 
     private fun stopNavigationService() {
+        sourceWatchJob?.cancel()
         navigationEngine?.stopNavigation()
         navigationEngine = null
         NavigationWakeLock.release()
