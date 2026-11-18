@@ -34,7 +34,12 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
                     // Ocupado transitorio (captura IMU u OTA, acotados en el
                     // tiempo; la OTA ademas reinicia la placa y corta BLE):
                     // espera sin contar como fallo ni hacer buscar en caliente.
-                    if (error == "busy" || error == "already_running") {
+                    if (error == "already_running") {
+                        started = true
+                        delay(pollMs)
+                        continue
+                    }
+                    if (error == "busy") {
                         delay(pollMs)
                         continue
                     }
