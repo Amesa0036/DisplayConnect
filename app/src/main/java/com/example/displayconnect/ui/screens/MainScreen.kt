@@ -101,7 +101,7 @@ fun MainScreen(
             ConnectionIndicator(state = uiState.connectionState)
             if (uiState.isNavigating) TripProgressCard(tripProgress)
             if (uiState.isNavigating) Text(
-                stringResource(if (gps.weak) R.string.gps_weak else R.string.gps_accuracy, gps.accuracyM?.toInt() ?: 0),
+                stringResource(if (gps.weak) (if (gps.hecate) R.string.gps_weak_hecate else R.string.gps_weak) else R.string.gps_accuracy, gps.accuracyM?.toInt() ?: 0),
                 color = if (gps.weak) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall)
             if (uiState.isNavigating) OfflineMapCard(offlineMap, viewModel::retryOfflineDownload)
