@@ -1,0 +1,96 @@
+package com.example.displayconnect.navigation
+
+import android.os.SystemClock
+import com.example.displayconnect.network.BleNavClient
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+
+/**
+ * Fuente de posicion: receptor GNSS propio de la placa Hecate (LC76G por I2C),
+ * expuesto por el firmware via gnss_diag (start/status/stop). El telefono
+ * sigue haciendo de router BLE; la placa calcula la solucion de navegacion.
+ *
+ * Sin repliegue silencioso: si la sesion muere se reintenta el arranque y, si
+ * la placa no soporta gnss_diag, el flujo termina con error y la navegacion no
+ * arranca (la eleccion de fuente es del usuario en ajustes).
+ */
+class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
+
+    override fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = flow {
+        // El modulo emite a 1 Hz; sondear mas rapido no aporta nada y satura BLE.
+        val pollMs = intervalMs.coerceIn(1000L, 5000L)
+        var started = false
+        // Backoff ante sesiones no productivas: un modulo bloqueado (9211,
+        // i2c_error) no se reintenta a 1 Hz indefinidamente. 2s,4s,...,30s y
+        // tras 5 fracasos seguidos el flujo termina con error visible.
+        var failures = 0
+        var backoffMs = pollMs
+        try {
+            while (true) {
+                val reply = navClient.gnssRawCommand(if (started) "status" else "start").getOrThrow()
+                if (!reply.optBoolean("ok", false)) {
+                    val error = reply.optString("error", "gnss_diag rechazado")
+                    // Ocupado transitorio (captura IMU u OTA, acotados en el
+                    // tiempo; la OTA ademas reinicia la placa y corta BLE):
+                    // espera sin contar como fallo ni hacer buscar en caliente.
+                    if (error == "busy" || error == "already_running") {
+                        delay(pollMs)
+                        continue
+                    }
+                    throw IllegalStateException(error)
+                }
+                // supported distingue placa con GNSS; "reader" distingue el
+                // firmware con reader completo del antiguo reserve1 (que solo
+                // hace prueba de longitud y nunca daria posicion en navegacion).
+                if (!reply.optBoolean("supported", false) || !reply.optBoolean("reader", false)) {
+                    throw IllegalStateException("unsupported_or_unavailable")
+                }
+                if (!reply.optBoolean("running", false)) {
+                    // restoration_fault es terminal (la restauracion fallo y el
+                    // firmware rechaza nuevas sesiones); el resto se reintenta.
+                    if (reply.optString("reason") == "restoration_fault") {
+                        throw IllegalStateException("restoration_fault")
+                    }
+                    val ended = started // la sesion corria y murio (i2c_error, invalid_length, imu_capture...)
+                    started = false
+                    if (ended) {
+                        failures++
+                        if (failures >= 5) throw IllegalStateException("gnss_session_unstable:" + reply.optString("reason"))
+                        backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+                        delay(backoffMs)
+                    } else {
+                        delay(pollMs)
+                    }
+                    continue
+                }
+                started = true
+                if (reply.optBoolean("valid_fix", false)) {
+                    failures = 0; backoffMs = pollMs
+                    val lat = reply.optDouble("latitude", Double.NaN)
+                    val lon = reply.optDouble("longitude", Double.NaN)
+                    val hdop = reply.optDouble("hdop", Double.NaN)
+                    val fixAgeMs = reply.optLong("fix_age_ms", Long.MAX_VALUE)
+                    if (lat.isFinite() && lat in -90.0..90.0 && lon.isFinite() && lon in -180.0..180.0 && hdop.isFinite() && hdop in 0.0..8.0 && fixAgeMs in 0..3000) {
+                        val speed = reply.optDouble("speed_mps", Double.NaN)
+                        val course = reply.optDouble("course_deg", Double.NaN)
+                        val altMsl = reply.optDouble("altitude_msl_m", Double.NaN).takeIf { it.isFinite() }
+                        emit(LocationUpdate(
+                            lat = lat,
+                            lon = lon,
+                            bearing = if (course.isFinite()) course.toFloat() else Float.NaN,
+                            speedMps = if (speed.isFinite()) speed.toFloat() else Float.NaN,
+                            // Estimacion documentada: el LC76G no expone accuracy;
+                            // se aproxima con HDOP x 5 m (UERE tipico en exterior).
+                            accuracyM = (hdop * 5.0).toFloat().coerceAtLeast(1f),
+                            elapsedMs = SystemClock.elapsedRealtime() - fixAgeMs,
+                            altitudeMslM = altMsl))
+                    }
+                }
+                delay(pollMs)
+            }
+        } finally {
+            if (started) runCatching { navClient.gnssRawCommand("stop") }
+        }
+    }
+}
