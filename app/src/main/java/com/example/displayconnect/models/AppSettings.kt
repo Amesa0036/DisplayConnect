@@ -13,6 +13,7 @@ data class AppSettings(
     val manualSpeedLimitKmh: Int = 120,
     val mapScaleMeters: Double = 400.0,
     val routeProfile: RouteProfile = RouteProfile.CAR,
+    val gpsSource: GpsSource = GpsSource.PHONE,
     val destQuery: String = "",
     val destLabel: String = "",
     val destLat: String = "",
