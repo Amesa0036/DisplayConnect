@@ -5,7 +5,7 @@ import kotlin.math.*
 
 data class GpsSample(val position: LatLon, val accuracyM: Float, val speedMps: Float,
     val bearing: Float, val elapsedMs: Long)
-data class GpsStatus(val accuracyM: Float? = null, val lastAcceptedMs: Long = 0, val weak: Boolean = true)
+data class GpsStatus(val accuracyM: Float? = null, val lastAcceptedMs: Long = 0, val weak: Boolean = true, val hecate: Boolean = false)
 
 /** Reject stale/batched, imprecise and isolated physically implausible fixes; allow verified reacquisition. */
 class GpsFilter(private val maxSpeedMps: Double) {
