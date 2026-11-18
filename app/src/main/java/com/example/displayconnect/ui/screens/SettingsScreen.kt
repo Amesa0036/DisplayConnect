@@ -51,6 +51,7 @@ fun SettingsScreen(
     val otaProgress by mainViewModel.otaProgress.collectAsState()
     val otaMessage by mainViewModel.otaMessage.collectAsState()
     val settings by viewModel.settings.collectAsState()
+    val gnssProbeMessage by mainViewModel.gnssProbeMessage.collectAsState()
     val stats by viewModel.stats.collectAsState()
     val language by viewModel.language.collectAsState()
 
@@ -73,6 +74,27 @@ fun SettingsScreen(
                     FilterChip(selected = language == "es", onClick = { viewModel.selectLanguage("es") }, label = { Text("Español") })
                     FilterChip(selected = language == "en", onClick = { viewModel.selectLanguage("en") }, label = { Text("English") })
                     FilterChip(selected = language == "pt-BR", onClick = { viewModel.selectLanguage("pt-BR") }, label = { Text("Português") })
+                }
+            }
+
+            SectionCard(title = stringResource(R.string.setting_gps_source)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE,
+                        onClick = { viewModel.updateSettings { it.copy(gpsSource = com.example.displayconnect.models.GpsSource.PHONE) } },
+                        label = { Text(stringResource(R.string.gps_source_phone)) })
+                    FilterChip(
+                        selected = settings.gpsSource == com.example.displayconnect.models.GpsSource.HECATE,
+                        onClick = {
+                            mainViewModel.probeAndSelectHecateGnss {
+                                viewModel.updateSettings { it.copy(gpsSource = com.example.displayconnect.models.GpsSource.HECATE) }
+                            }
+                        },
+                        label = { Text(stringResource(R.string.gps_source_hecate)) })
+                }
+                gnssProbeMessage?.let {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                 }
             }
 
