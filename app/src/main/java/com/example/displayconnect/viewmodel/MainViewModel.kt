@@ -48,8 +48,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val altitudeStatus = altitudeMonitor.state
     val boardInfo = navClient.boardInfo
     val boardBusy = navClient.boardBusy
+    private val _gnssDiagnostic = MutableStateFlow<com.example.displayconnect.network.GnssDiagnostic?>(null)
+    val gnssDiagnostic = _gnssDiagnostic.asStateFlow()
+    private val _gnssMessage = MutableStateFlow("Sin consultar. Solo recepción de posición; la navegación sigue usando el móvil.")
+    val gnssMessage = _gnssMessage.asStateFlow()
+    private val _gnssBusy = MutableStateFlow(false)
+    val gnssBusy = _gnssBusy.asStateFlow()
+    fun gnssCommand(op: String) {
+        if (_gnssBusy.value || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _shadowBusy.value) return
+        if (_uiState.value.isNavigating) return
+        _gnssBusy.value = true
+        _gnssDiagnostic.value = null
+        _gnssMessage.value = "Consultando GPS propio..."
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                _gnssDiagnostic.value = navClient.gnssCommand(op).getOrThrow()
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _gnssMessage.value = "No confirmado: ${e.message}. Consulta estado antes de repetir."
+            } finally { _gnssBusy.value = false }
+        }
+    }
+
     private val _boardMessage = MutableStateFlow<String?>(null)
     val boardMessage: StateFlow<String?> = _boardMessage.asStateFlow()
+
+    private val _gnssProbeMessage = MutableStateFlow<String?>(null)
+    val gnssProbeMessage: StateFlow<String?> = _gnssProbeMessage.asStateFlow()
 
     private val _otaMessage = MutableStateFlow<String?>(null)
     val otaMessage: StateFlow<String?> = _otaMessage.asStateFlow()
@@ -58,8 +83,199 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _otaProgress = MutableStateFlow(-1)
     val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
 
+    private val _imuMessage = MutableStateFlow("Sin consultar. Captura solo con firmware de prueba compatible.")
+    val imuMessage: StateFlow<String> = _imuMessage.asStateFlow()
+    private val _imuBusy = MutableStateFlow(false)
+    val imuBusy: StateFlow<Boolean> = _imuBusy.asStateFlow()
+    private val _imuRunning = MutableStateFlow(false)
+    val imuRunning: StateFlow<Boolean> = _imuRunning.asStateFlow()
+    private val _imuSaved = MutableStateFlow(java.io.File(application.filesDir, "imu-captures").listFiles()?.any { it.extension == "csv" } == true)
+    val imuSaved: StateFlow<Boolean> = _imuSaved.asStateFlow()
+    private var imuSession = 0L
+    private fun lastImuFile(): java.io.File? = java.io.File(getApplication<Application>().filesDir, "imu-captures")
+        .listFiles()?.filter { it.extension == "csv" }?.maxByOrNull { it.lastModified() }
+    private fun imuStopLabel(reason: String): String = when(reason) {
+        "fifo_window_full" -> "ventana completa (firmware anterior)"
+        "duration_limit" -> "fin de los 3 minutos"
+        "capacity_limit" -> "limite de memoria"
+        "sensor_stale" -> "SENSOR SIN DATOS FRESCOS"
+        "fifo_read_error" -> "ERROR DE LECTURA FIFO"
+        "fifo_fill_timeout" -> "llenado incompleto"
+        "user" -> "parada solicitada"
+        "sensor_errors" -> "ERROR DEL SENSOR"
+        "sensor_init_error" -> "ERROR AL INICIAR SENSOR"
+        "never_started" -> "sin iniciar"
+        else -> reason
+    }
+
+    private val _shadowMessage = MutableStateFlow("Diagnostico apagado. No controla pantalla. GPS solo disponible durante navegacion activa.")
+    val shadowMessage = _shadowMessage.asStateFlow()
+    private val _shadowBusy = MutableStateFlow(false)
+    val shadowBusy = _shadowBusy.asStateFlow()
+    private val _shadowSaved = MutableStateFlow(false)
+    val shadowSaved = _shadowSaved.asStateFlow()
+    fun shadowCommand(op: String) {
+        if (_shadowBusy.value || _imuBusy.value || _otaBusy.value || navClient.boardBusy.value) return
+        _shadowBusy.value = true
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                val current = navClient.imuCommand("status", shadow = true).getOrThrow()
+                check(current.getInt("protocol") == 1) { "Firmware sin diagnostico sombra" }
+                val session = if (op == "stop") current.getLong("session") else 0
+                val reply = navClient.imuCommand(op, session, shadow = true).getOrThrow()
+                _shadowMessage.value = if (reply.getBoolean("running")) "Diagnostico en curso, hasta 3 minutos. No apaga ni enciende la pantalla. Guarda antes de apagar."
+                    else "Detenido (codigo ${reply.getInt("stop_code")}), ${reply.getInt("count")} decisiones. Restauracion con fallo: ${reply.getBoolean("restore_failed")}. Descarga antes de apagar."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _shadowMessage.value = "No confirmado: ${e.message}. Consulta estado antes de repetir."
+            } finally { _shadowBusy.value = false }
+        }
+    }
+    fun downloadShadow() {
+        // Export while parked/outside navigation. The diagnostic itself is compatible with NAV.
+        if (_shadowBusy.value || _imuBusy.value || _otaBusy.value || navClient.boardBusy.value || _uiState.value.isNavigating) return
+        _shadowBusy.value = true
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                val download = navClient.downloadShadowCsv().getOrThrow()
+                withContext(Dispatchers.IO) {
+                    val dir = java.io.File(getApplication<Application>().filesDir, "shadow-captures")
+                    check(dir.isDirectory || dir.mkdirs())
+                    val file = java.io.File(dir, "${download.boardId}-${download.session}-${java.util.UUID.randomUUID()}.csv")
+                    val storage = android.util.AtomicFile(file); val bytes = download.csv.toByteArray(Charsets.UTF_8)
+                    val stream = storage.startWrite()
+                    try { stream.write(bytes); storage.finishWrite(stream) } catch (e: Exception) { storage.failWrite(stream); throw e }
+                    check(storage.readFully().contentEquals(bytes)) { "Archivo no verificado" }
+                }
+                val ack = navClient.imuCommand("ack_saved", download.session, download.count, shadow = true)
+                _shadowSaved.value = true
+                _shadowMessage.value = "CSV de sombra guardado y verificado dentro de la app. " + if (ack.isSuccess) "Placa informada." else "Sin confirmacion de placa: OTA sigue bloqueada. Reintenta descarga."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _shadowMessage.value = "Descarga incompleta: ${e.message}. No apagues la placa."
+            } finally { _shadowBusy.value = false }
+        }
+    }
+    fun exportShadow(uri: Uri?) {
+        if (uri == null || _shadowBusy.value || _uiState.value.isNavigating) return
+        _shadowBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val context = getApplication<Application>()
+                    val file = java.io.File(context.filesDir, "shadow-captures").listFiles()?.filter { it.extension == "csv" }?.maxByOrNull { it.lastModified() } ?: error("No hay CSV guardado")
+                    val bytes = file.readBytes()
+                    context.contentResolver.openOutputStream(uri, "wt")?.use { it.write(bytes) } ?: error("No se pudo escribir")
+                    val readback = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    check(readback != null && readback.contentEquals(bytes)) { "Copia no verificada" }
+                }
+                _shadowMessage.value = "Copia externa guardada y verificada."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _shadowMessage.value = "Copia externa no confirmada: ${e.message}. La copia privada sigue en la app."
+            } finally { _shadowBusy.value = false }
+        }
+    }
+
+    fun refreshImu() = runImu("status")
+    fun startImu() = runImu("start")
+    fun stopImu() = runImu("stop")
+
+    private fun runImu(op: String) {
+        if (_shadowBusy.value || _imuBusy.value || _otaBusy.value || navClient.boardBusy.value || _uiState.value.isNavigating) return
+        _imuBusy.value = true
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                // Refresh session before a stop, including after reconnect or app restart.
+                if (op == "stop") imuSession = navClient.imuCommand("status").getOrThrow().getLong("session")
+                // Protocol 2 single-window legacy and protocol 3 bounded direct logger.
+                if (op == "start") {
+                    val st = navClient.imuCommand("status").getOrThrow()
+                    check(st.optInt("protocol", 0) in 2..3) { "Este firmware no soporta captura IMU" }
+                }
+                val reply = navClient.imuCommand(op, if (op == "stop") imuSession else 0).getOrThrow()
+                imuSession = reply.getLong("session")
+                _imuRunning.value = reply.getBoolean("running")
+                _imuMessage.value = if (_imuRunning.value) "Grabando: hasta 3 minutos, solo en mesa. No apagues la placa. Consulta estado o para cuando termines."
+                    else "Detenida (${imuStopLabel(reply.getString("stop_reason"))}): ${reply.getInt("count")}/${reply.getInt("capacity")}. Descarga antes de apagar la placa."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) {
+                _imuMessage.value = "No confirmado: ${e.message}. Consulta el estado antes de repetir."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
+    fun downloadImu() {
+        if (_shadowBusy.value || _imuBusy.value || _otaBusy.value || navClient.boardBusy.value || _uiState.value.isNavigating) return
+        _imuBusy.value = true
+        _imuMessage.value = "Parando y descargando. Espera; no apagues la placa."
+        viewModelScope.launch {
+            try {
+                if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                val download = navClient.downloadImuCsv().getOrThrow()
+                val csv = download.csv
+                withContext(Dispatchers.IO) {
+                    val directory = java.io.File(getApplication<Application>().filesDir, "imu-captures")
+                    check(directory.isDirectory || directory.mkdirs()) { "No se pudo crear carpeta privada" }
+                    // Preserve every successful download, even after a reboot reuses a random session id.
+                    val destination = java.io.File(directory, "${download.boardId}-${download.session}-${java.util.UUID.randomUUID()}.csv")
+                    val storage = android.util.AtomicFile(destination)
+                    val stream = storage.startWrite()
+                    try { stream.write(csv.toByteArray(Charsets.UTF_8)); storage.finishWrite(stream)
+                    } catch (e: Exception) { storage.failWrite(stream); throw e }
+                    check(storage.readFully().contentEquals(csv.toByteArray(Charsets.UTF_8))) { "No se pudo verificar el archivo local" }
+                }
+                // Only acknowledge after durable local write + readback, with exact frozen session/count.
+                val ack = navClient.imuCommand("ack_saved", download.session, download.count)
+                _imuRunning.value = false
+                _imuSaved.value = true
+                _imuMessage.value = "CSV guardado y verificado dentro de la app. Usa Guardar copia para elegir carpeta. " + if (ack.isSuccess) "Placa informada del guardado." else "La placa NO confirma el guardado: OTA seguira bloqueada; reintenta descarga."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _imuMessage.value = "Descarga no completada: ${e.message}. No apagues la placa; puedes reintentar."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
+    fun exportImu(uri: Uri?) {
+        if (uri == null || _imuBusy.value) return
+        _imuBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val context = getApplication<Application>()
+                    val bytes = android.util.AtomicFile(lastImuFile() ?: error("No hay archivo guardado")).readFully()
+                    val output = context.contentResolver.openOutputStream(uri, "wt") ?: error("No se pudo abrir destino")
+                    output.use { it.write(bytes); it.flush() }
+                    val verified = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    check(verified != null && verified.contentEquals(bytes)) { "No se pudo verificar la copia; conserva el archivo interno" }
+                }
+                _imuMessage.value = "Copia CSV guardada y verificada en la carpeta elegida."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _imuMessage.value = "Copia no confirmada: ${e.message}. El CSV interno sigue guardado."
+            } finally { _imuBusy.value = false }
+        }
+    }
+
+    /** Sondeo real de capacidad GNSS de la placa antes de seleccionar HECATE;
+     *  sin sondeo no se habilita la fuente (nada de suposiciones por modelo). */
+    fun probeAndSelectHecateGnss(onAvailable: () -> Unit) {
+        viewModelScope.launch {
+            _gnssProbeMessage.value = null
+            val reply = navClient.gnssRawCommand("status").getOrNull()
+            if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
+                onAvailable()
+            } else {
+                _gnssProbeMessage.value = when (com.example.displayconnect.utils.AppLanguage.language.value) {
+                    "en" -> "This board does not offer its own GPS (firmware without gnss_diag or board not connected)."
+                    "es" -> "Esta placa no ofrece GPS propio para navegar (falta firmware con lectura completa o placa no conectada)."
+                    else -> "Esta placa nao oferece GPS proprio (firmware sem gnss_diag ou placa nao conectada)."
+                }
+            }
+        }
+    }
+
     fun startFirmwareUpdate() {
-        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value) return
+        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _shadowBusy.value || _imuRunning.value) return
         if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
             _otaMessage.value = "Conecta la placa primero."
             return
@@ -69,7 +285,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _otaProgress.value = -1
             _otaMessage.value = "Buscando actualizaciones..."
             try {
-                val manifest = FirmwareRelease.fetchLatest().getOrElse {
+                // Query live capture state on every attempt, including app restart/reconnect.
+                val version = navClient.boardFirmwareVersion().getOrNull()
+                if (version?.contains("passive") == true) {
+                    if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                    val capture = navClient.imuCommand("status").getOrThrow()
+                    _imuRunning.value = capture.getBoolean("running")
+                    check(!capture.getBoolean("running") && !capture.getBoolean("unsaved")) { "Para y descarga la captura antes de actualizar" }
+                }
+                val updateBoard = navClient.boardCommand("board_info").getOrThrow()
+                val manifest = FirmwareRelease.fetchLatest(updateBoard.hardwareModel).getOrElse {
                     _otaMessage.value = "No se pudo consultar la actualizacion: ${it.message}"
                     return@launch
                 }
@@ -93,8 +318,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 _otaMessage.value = result.fold(
                     onSuccess = { "Actualizacion ${manifest.version} instalada. La placa se reinicia sola." },
-                    onFailure = { "Error actualizando: ${it.message}. La placa sigue con su firmware anterior." }
+                    onFailure = { "Error actualizando: ${it.message}. Comprueba la version al reconectar." }
                 )
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (e: Exception) { _otaMessage.value = "Actualizacion no iniciada: ${e.message}"
             } finally {
                 _otaBusy.value = false
                 _otaProgress.value = -1
@@ -118,7 +345,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         runBoardCommand("board_rename", name)
     }
     private fun runBoardCommand(type: String, name: String? = null) {
-        if (_uiState.value.isNavigating || navClient.boardBusy.value) return
+        if (_uiState.value.isNavigating || navClient.boardBusy.value || _imuBusy.value) return
         val expectedAddress = _uiState.value.bleDeviceAddress
         val expectedId = navClient.boardInfo.value?.id
         if (type != "board_info" && expectedId == null) {
