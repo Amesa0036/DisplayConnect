@@ -261,6 +261,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun probeAndSelectHecateGnss(onAvailable: () -> Unit) {
         viewModelScope.launch {
             _gnssProbeMessage.value = null
+            if (navClient.boardInfo.value == null) navClient.boardCommand("board_info")
             val reply = navClient.gnssRawCommand("status").getOrNull()
             if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
                 onAvailable()
