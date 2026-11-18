@@ -29,8 +29,10 @@ class GnssSourceSelectorUiTest {
         compose.setContent {
             val language by AppLanguage.language.collectAsState()
             val baseContext = LocalContext.current
+            val registryOwner = androidx.activity.compose.LocalActivityResultRegistryOwner.current
             val localized = remember(language) { AppLanguage.context(baseContext, language) }
             CompositionLocalProvider(
+                androidx.activity.compose.LocalActivityResultRegistryOwner provides registryOwner,
                 LocalContext provides localized,
                 LocalConfiguration provides localized.resources.configuration
             ) {
