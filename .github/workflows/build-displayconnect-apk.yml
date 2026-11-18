@@ -63,6 +63,33 @@ jobs:
           echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
           ./gradlew --no-daemon :app:signingReport :app:testDebugUnitTest :app:assembleDebug
 
+      - name: Enable KVM for UI test
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Render GPS source selector in Android emulator (bench UI verification)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 600
+          script: |
+            mkdir -p ui-evidence
+            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
+
+      - name: Retain UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-evidence
+          path: ui-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Sign final APK explicitly and enforce certificate match
         shell: bash
         run: |
@@ -87,6 +114,21 @@ jobs:
           print('Final APK signature matches the fixed local certificate.')
           PYVERIFY
           mv "$RUNNER_TEMP/displayconnect-fixed.apk" "$APK"
+
+      - name: Keep exact build source and verification evidence
+        run: |
+          mkdir -p build-evidence
+          git rev-parse HEAD > build-evidence/source-commit.txt
+          git archive HEAD app > build-evidence/app-source.tar
+          cp "$RUNNER_TEMP/displayconnect-signer.txt" build-evidence/apksigner.txt
+          sha256sum app/build/outputs/apk/debug/app-debug.apk > build-evidence/apk.sha256
+
+      - name: Upload build evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-evidence
+          path: build-evidence/
+          retention-days: 14
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
