@@ -94,11 +94,20 @@ class BleNavClient(context: Context) {
     private val otaLines = Channel<String>(capacity = Channel.BUFFERED)
     private val readAck = AtomicReference<CompletableDeferred<Result<ByteArray>>?>(null)
     private var boardReply: CompletableDeferred<JSONObject>? = null
+    private var imuReply: CompletableDeferred<JSONObject>? = null
+    private var imuReplyId: String? = null
+    private var gnssReplyId: String? = null
+    private var gnssReply: CompletableDeferred<JSONObject>? = null
+    val shadowGpsSource = ShadowGpsSource()
+    private var shadowGpsJob: Job? = null
+    private val shadowProtected = AtomicBoolean(false)
 
     private fun clearBoardSession() {
+        shadowGpsSource.clear(); shadowGpsJob?.cancel(); shadowGpsJob = null; shadowProtected.set(false)
         _boardInfo.value = null
+        synchronized(this) { gnssReply?.cancel(); gnssReply = null; gnssReplyId = null }
         boardDecoder.reset()
-        synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null }
+        synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null; imuReply?.cancel(); imuReply = null; imuReplyId = null }
     }
 
     /** A command never enters the conflated navigation channel. One request at a time. */
@@ -134,7 +143,10 @@ class BleNavClient(context: Context) {
             check(newName == null || boardName == newName) { "La placa no confirma el nombre solicitado" }
             val previousIdentity = _boardInfo.value
             check(previousIdentity == null || previousIdentity.id == boardId) { "La identidad de la placa ha cambiado" }
-            val info = BoardInfo(boardId, boardName, address)
+            val reportedModel = response.optString("hardware_model").takeIf { it.isNotBlank() }
+            val hardwareModel = HardwareUpdatePolicy.resolve(reportedModel, if (reportedModel == null) boardFirmwareVersion().getOrNull() else null)
+            check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+            val info = BoardInfo(boardId, boardName, address, hardwareModel)
             _boardInfo.value = info
             Result.success(info)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -142,9 +154,175 @@ class BleNavClient(context: Context) {
         } catch (e: Exception) {
             Result.failure(e)
         } finally {
-            synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null }
+            synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null; imuReply?.cancel(); imuReply = null; imuReplyId = null }
             _boardBusy.value = false
         }
+    }
+
+    suspend fun gnssCommand(op: String): Result<GnssDiagnostic> =
+        gnssRawCommand(op).mapCatching { GnssDiagnostic.parse(it, SystemClock.elapsedRealtime()) }
+
+    /** Explicit, bounded GNSS diagnostic query. Never enters the NAV channel. */
+    suspend fun gnssRawCommand(op: String): Result<JSONObject> = boardMutex.withLock {
+        _boardBusy.value = true
+        try {
+            check(op in listOf("start", "status", "stop"))
+            check(!otaActive.get() && !shadowProtected.get()) { "Termina o guarda primero las capturas" }
+            val connection = gatt ?: error("La placa no está conectada")
+            val characteristic = rxCharacteristic ?: error("La placa no está lista")
+            val address = targetAddress
+            val board = _boardInfo.value ?: error("Lee primero la identidad de la placa")
+            check(board.address == address && board.hardwareModel == "waveshare_s3_175g") { "Prueba solo para Hecate G" }
+            val id = UUID.randomUUID().toString()
+            val reply = CompletableDeferred<JSONObject>()
+            synchronized(this) { gnssReplyId = id; gnssReply = reply }
+            val request = JSONObject().put("type", "gnss_diag").put("request_id", id).put("board_id", board.id).put("op", op)
+            val written = writeMutex.withLock {
+                check(connection === gatt && address == targetAddress) { "La conexión ha cambiado" }
+                writeInChunks(connection, characteristic, ("\n" + request + "\n").toByteArray(Charsets.UTF_8))
+            }
+            check(written) { "No se pudo enviar la consulta GPS" }
+            val response = withTimeoutOrNull(5000) { reply.await() } ?: error("Sin confirmación. Requiere firmware con diagnóstico LC76G")
+            check(connection === gatt && address == targetAddress && response.getString("board_id") == board.id) { "La placa ha cambiado" }
+            check(response.getBoolean("ok")) { response.optString("error", "Consulta rechazada") }
+            Result.success(response)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { Result.failure(e)
+        } finally {
+            synchronized(this) { gnssReply?.cancel(); gnssReply = null; gnssReplyId = null }
+            _boardBusy.value = false
+        }
+    }
+
+    /** Passive capture commands never enter the conflated navigation queue. */
+    suspend fun imuCommand(op: String, session: Long = 0, offset: Int = 0, shadow: Boolean = false): Result<JSONObject> = boardMutex.withLock {
+        _boardBusy.value = true
+        try {
+            check(!otaActive.get()) { "Espera a que termine la actualizacion" }
+            val connection = gatt ?: error("La placa no esta conectada")
+            val characteristic = rxCharacteristic ?: error("La placa no esta lista")
+            val address = targetAddress
+            val identity = _boardInfo.value ?: error("Lee primero la identidad de la placa")
+            check(identity.address == address) { "La identidad corresponde a otra placa" }
+            val id = UUID.randomUUID().toString()
+            val reply = CompletableDeferred<JSONObject>()
+            synchronized(this) { imuReplyId = id; imuReply = reply }
+            val request = JSONObject().put("type", if (shadow) "shadow_capture" else "imu_capture").put("request_id", id)
+                .put("board_id", identity.id).put("op", op).put("session", session).put("offset", offset)
+                .put("started_utc", java.text.SimpleDateFormat("yyyy-MM-dd\'T\'HH:mm:ss.SSS\'Z\'", java.util.Locale.US).apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }.format(java.util.Date()))
+            val written = writeMutex.withLock {
+                check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+                writeInChunks(connection, characteristic, ("\n" + request + "\n").toByteArray(Charsets.UTF_8))
+            }
+            check(written) { "No se pudo enviar la orden" }
+            val response = withTimeoutOrNull(5000) { reply.await() } ?: error("La placa no confirma la captura")
+            check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+            check(response.optBoolean("ok")) { response.optString("error", "Captura rechazada") }
+            if (shadow) shadowProtected.set(response.getBoolean("running") || response.getBoolean("unsaved") || response.getBoolean("restore_failed"))
+            Result.success(response)
+        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+        } catch (e: Exception) { Result.failure(e)
+        } finally {
+            synchronized(this) { imuReply?.cancel(); imuReply = null; imuReplyId = null }
+            _boardBusy.value = false
+        }
+    }
+
+    suspend fun downloadShadowCsv(): Result<ImuDownload> = runCatching {
+        val board = _boardInfo.value ?: error("Lee primero la placa")
+        val address = targetAddress
+        val initial = imuCommand("status", shadow = true).getOrThrow()
+        val session = strictLong(initial, "session", 1, 4294967295L)
+        imuCommand("stop", session, shadow = true).getOrThrow()
+        val frozen = imuCommand("status", shadow = true).getOrThrow()
+        check(frozen.getInt("protocol") == 1 && frozen.getLong("session") == session && !frozen.getBoolean("running"))
+        val count = strictLong(frozen, "count", 1, 182).toInt()
+        // Keep explicit stop/restore/partial flags, no claim that a candidate means stopped.
+        val meta = JSONObject(frozen.toString()).put("diagnostic_only", true)
+            .put("board_id", board.id).put("app_version", appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName)
+            .put("gps_age_basis", "phone_sample_age_plus_board_challenge_rtt_upper_bound")
+            .put("reason_labels", org.json.JSONArray(listOf("disabled", "manual_override", "resource_conflict", "imu_invalid", "imu_gap", "imu_stale", "imu_warmup", "imu_changed", "ble_lost", "gps_unknown", "gps_stale", "gps_moving", "possible_rest_only")))
+            .put("stop_labels", org.json.JSONArray(listOf("never_started", "running", "duration", "user", "error", "capacity", "clock")))
+            .put("partial_or_fault", frozen.getInt("stop_code") != 2 || frozen.getBoolean("restore_failed"))
+        meta.remove("rows")
+        val csv = StringBuilder("# " + meta + "\n" + ShadowExportContract.HEADER + "\n")
+        var offset = 0
+        var lastTime = -1L
+        while (offset < count) {
+            check(targetAddress == address && _boardInfo.value?.id == board.id) { "La placa ha cambiado" }
+            var page: JSONObject? = null
+            repeat(3) { if (page == null) page = imuCommand("read", session, offset, shadow = true).getOrNull() }
+            val response = page ?: error("Bloque no confirmado")
+            val (text, n) = ShadowExportContract.rows(response, session, offset, count)
+            val rows = response.getJSONArray("rows")
+            repeat(n) { i -> val time = rows.getJSONArray(i).getLong(0); check(time > lastTime); lastTime = time }
+            csv.append(text); offset += n
+        }
+        check(targetAddress == address && _boardInfo.value?.id == board.id)
+        ImuDownload(csv.toString(), board.id, session, count)
+    }
+
+    /** Freeze first, then pull retryable pages. Lost notifications never advance the offset. */
+    data class ImuDownload(val csv: String, val boardId: String, val session: Long, val count: Int)
+
+    suspend fun downloadImuCsv(): Result<ImuDownload> = runCatching {
+        val expectedBoard = _boardInfo.value ?: error("Lee primero la identidad de la placa")
+        val expectedAddress = targetAddress
+        val state = imuCommand("status").getOrThrow()
+        val session = state.getLong("session")
+        check(session != 0L) { "No hay captura" }
+        imuCommand("stop", session).getOrThrow()
+        val frozen = imuCommand("status").getOrThrow()
+        check(frozen.getLong("session") == session && !frozen.getBoolean("running")) { "Captura cambiada" }
+        val count = frozen.getInt("count")
+        val capacity = frozen.getInt("capacity")
+        val stopReason = frozen.getString("stop_reason")
+        // Legacy2 requires a full window. Protocol3 exports partial/fault sessions as explicit evidence.
+        val protocol = frozen.getInt("protocol")
+        check(ImuExportContract.exportable(protocol, count, capacity, false, stopReason)) { "No hay datos exportables ($stopReason: $count/$capacity)" }
+        val pageSize = if (protocol == 3) frozen.getInt("page_size") else 5
+        check(pageSize in 1..10) { "Tamano de bloque no compatible" }
+        val metadata = JSONObject().put("protocol", frozen.getInt("protocol"))
+            .put("board_id", expectedBoard.id).put("session", session).put("count", count)
+            .put("capacity", frozen.getInt("capacity")).put("firmware", frozen.getString("firmware"))
+            .put("started_utc_phone", frozen.getString("started_utc")).put("stop_reason", frozen.getString("stop_reason"))
+            .put("no_data", frozen.getLong("no_data")).put("duplicates", frozen.getLong("duplicates"))
+            .put("errors", frozen.getLong("errors")).put("late_reads", frozen.getLong("late_reads"))
+            .put("odr_hz_nominal", frozen.getDouble("odr_hz_nominal")).put("fs_g_nominal", frozen.getInt("fs_g_nominal"))
+            .put("period_ms_nominal", frozen.getInt("period_ms_nominal")).put("window_ms_measured", frozen.getLong("window_end_ms") - frozen.getLong("window_start_ms"))
+            .put("restore_failed", frozen.getBoolean("restore_failed"))
+            .put("app_version", appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName)
+        if (protocol == 3) {
+            for (key in listOf("mode", "continuity", "duration_limit_ms", "quality_flags", "rail_samples", "missing_samples", "tick_discontinuities", "max_host_gap_ms", "page_size")) {
+                check(frozen.has(key)) { "Falta metadato $key" }; metadata.put(key, frozen.get(key))
+            }
+            metadata.put("sample_time_basis", "host_read_complete_ms_not_sensor_time")
+                .put("sensor_tick_basis", "24bit_sample_counter_not_ms")
+                .put("partial_or_fault_recording", stopReason != "duration_limit" || frozen.getInt("errors") > 0 || frozen.getBoolean("restore_failed"))
+        }
+        val csv = StringBuilder("# " + metadata.toString() + "\n")
+        csv.append(ImuExportContract.header(protocol)).append('\n')
+        var offset = 0
+        var written = 0
+        while (offset < count) {
+            check(targetAddress == expectedAddress && _boardInfo.value?.id == expectedBoard.id) { "La placa ha cambiado" }
+            var page: JSONObject? = null
+            repeat(3) { if (page == null) page = imuCommand("read", session, offset).getOrNull() }
+            val reply = page ?: error("No se pudo descargar el bloque $offset; la placa conserva la captura")
+            check(reply.getLong("session") == session && reply.getInt("count") == count && reply.getInt("offset") == offset) { "Bloque de otra captura" }
+            val rows = reply.getJSONArray("rows")
+            check(rows.length() == minOf(pageSize, count - offset)) { "Bloque incompleto" }
+            for (i in 0 until rows.length()) {
+                val row = rows.getJSONArray(i)
+                check(row.length() == 8) { "Fila no valida" }
+                csv.append((0 until 8).joinToString(",") { row.getLong(it).toString() }).append('\n')
+            }
+            written += rows.length()
+            offset += rows.length()
+        }
+        check(written == count) { "Descarga incompleta" }
+        check(targetAddress == expectedAddress && _boardInfo.value?.id == expectedBoard.id) { "La placa ha cambiado" }
+        ImuDownload(csv.toString(), expectedBoard.id, session, count)
     }
 
     private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
@@ -162,7 +340,25 @@ class BleNavClient(context: Context) {
             if (otaActive.get() && line.startsWith("OTA:")) { otaLines.trySend(line); continue }
             try {
                 val json = JSONObject(line)
+                if (json.optString("type") == "shadow_gps_request") {
+                    // Never await a command/reply here. Build age only after the writer lock,
+                    // so time queued behind NAV is not silently omitted from sample age.
+                    shadowGpsJob?.cancel()
+                    shadowGpsJob = scope.launch {
+                        writeMutex.withLock {
+                            if (connection !== gatt || otaActive.get()) return@withLock
+                            val chr = rxCharacteristic ?: return@withLock
+                            val response = runCatching { shadowGpsSource.response(json, SystemClock.elapsedRealtime()) }.getOrNull() ?: return@withLock
+                            writeInChunks(connection, chr, ("\n" + response + "\n").toByteArray(Charsets.UTF_8))
+                        }
+                    }
+                    continue
+                }
                 synchronized(this) {
+                    if (json.optString("type") in listOf("imu_reply", "shadow_reply") && json.optString("request_id") == imuReplyId)
+                        imuReply?.complete(json)
+                    if (json.optString("type") == "gnss_reply" && json.optString("request_id") == gnssReplyId)
+                        gnssReply?.complete(json)
                     if (json.optString("type") == "board_reply" && json.optString("request_id") == boardReplyId)
                         boardReply?.complete(json)
                 }
@@ -197,10 +393,16 @@ class BleNavClient(context: Context) {
         sha256Hex: String,
         onProgress: (sent: Int, total: Int) -> Unit
     ): Result<Unit> {
+        try {
+            HardwareUpdatePolicy.requireLegacyOtaTarget(_boardInfo.value?.hardwareModel)
+            HardwareUpdatePolicy.requireCImage(bin)
+        }
+        catch (e: IllegalArgumentException) { return Result.failure(e) }
         val connection = gatt ?: return Result.failure(Exception("La placa no esta conectada"))
         val characteristic = rxCharacteristic ?: return Result.failure(Exception("La placa no esta lista"))
         if (_connectionState.value != ConnectionState.CONNECTED)
             return Result.failure(Exception("La placa no esta conectada"))
+        if (shadowProtected.get()) return Result.failure(Exception("Para y guarda el diagnostico sombra antes de actualizar. Si fallo restauracion, guarda y reinicia primero."))
         if (!otaActive.compareAndSet(false, true))
             return Result.failure(Exception("Ya hay una actualizacion en curso"))
         _boardBusy.value = true
