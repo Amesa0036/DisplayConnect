@@ -15,8 +15,8 @@ android {
         applicationId = "com.example.displayconnect"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "3.0"
+        versionCode = 9
+        versionName = "3.6-gnss-nav1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
