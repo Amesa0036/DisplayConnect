@@ -50,7 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val boardBusy = navClient.boardBusy
     private val _gnssDiagnostic = MutableStateFlow<com.example.displayconnect.network.GnssDiagnostic?>(null)
     val gnssDiagnostic = _gnssDiagnostic.asStateFlow()
-    private val _gnssMessage = MutableStateFlow("Sin consultar. Solo recepción de posición; la navegación sigue usando el móvil.")
+    private val _gnssMessage = MutableStateFlow("Sin consultar. Este panel no cambia la fuente de posición elegida en Ajustes.")
     val gnssMessage = _gnssMessage.asStateFlow()
     private val _gnssBusy = MutableStateFlow(false)
     val gnssBusy = _gnssBusy.asStateFlow()
