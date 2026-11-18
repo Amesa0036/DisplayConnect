@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalUriHandler
@@ -50,7 +51,7 @@ import com.example.displayconnect.routing.RouteProfile
 import com.example.displayconnect.ui.components.ConnectionIndicator
 import com.example.displayconnect.ui.components.TripProgressCard
 import com.example.displayconnect.ui.components.OfflineMapCard
-import com.example.displayconnect.ui.navigation.MainTopBar
+import com.example.displayconnect.ui.navigation.DataTopBar
 import com.example.displayconnect.viewmodel.MainViewModel
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -59,6 +60,8 @@ fun MainScreen(
     onNavigateToSettings: () -> Unit,
     onRequestLocationPermission: () -> Unit,
     onRequestBluetoothPermission: () -> Unit,
+    onNavigateBack: () -> Unit,
+    section: String,
     viewModel: MainViewModel = viewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -73,6 +76,16 @@ fun MainScreen(
     val tripProgress by viewModel.tripProgress.collectAsState()
     val offlineMap by viewModel.offlineMap.collectAsState()
     val gps by viewModel.gps.collectAsState()
+    val gnss by viewModel.gnssDiagnostic.collectAsState()
+    val gnssMessage by viewModel.gnssMessage.collectAsState()
+    val gnssBusy by viewModel.gnssBusy.collectAsState()
+    var gnssNow by remember { androidx.compose.runtime.mutableStateOf(android.os.SystemClock.elapsedRealtime()) }
+    LaunchedEffect(section, gnss) {
+        while (section == "sensors") {
+            gnssNow = android.os.SystemClock.elapsedRealtime()
+            kotlinx.coroutines.delay(1000)
+        }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val isConnected = uiState.connectionState == ConnectionState.CONNECTED
     val uriHandler = LocalUriHandler.current
@@ -85,7 +98,7 @@ fun MainScreen(
     }
 
     Scaffold(
-        topBar = { MainTopBar(onNavigateToSettings) },
+        topBar = { DataTopBar(when (section) { "board" -> "Tu placa"; "sensors" -> "Sensores"; else -> "Rutas y mapas" }, onNavigateBack) },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
@@ -99,13 +112,33 @@ fun MainScreen(
             Spacer(modifier = Modifier.height(4.dp))
 
             ConnectionIndicator(state = uiState.connectionState)
-            if (uiState.isNavigating) TripProgressCard(tripProgress)
-            if (uiState.isNavigating) Text(
-                stringResource(if (gps.weak) R.string.gps_weak else R.string.gps_accuracy, gps.accuracyM?.toInt() ?: 0),
-                color = if (gps.weak) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall)
-            if (uiState.isNavigating) OfflineMapCard(offlineMap, viewModel::retryOfflineDownload)
-
+            if (section == "routes") {
+                Text("GPX y favoritos siguen en la pantalla de navegar. Aquí puedes consultar las descargas y usar la búsqueda detallada o coordenadas.", style = MaterialTheme.typography.bodySmall)
+                if (uiState.isNavigating) TripProgressCard(tripProgress)
+                if (offlineMap.total > 0 || offlineMap.downloading || offlineMap.error != null || offlineMap.ready) {
+                    OfflineMapCard(offlineMap, viewModel::retryOfflineDownload)
+                } else {
+                    Text("La cobertura sin conexión se descarga al iniciar una ruta. No hay una descarga activa.", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+            if (section == "sensors") {
+                Text(if (gps.accuracyM == null) "Sin lectura GPS reciente" else stringResource(if (gps.weak) (if (gps.hecate) R.string.gps_weak_hecate else R.string.gps_weak) else R.string.gps_accuracy, gps.accuracyM?.toInt() ?: 0), style = MaterialTheme.typography.bodySmall)
+                com.example.displayconnect.ui.components.AltitudeStatusCard(altitudeStatus)
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text("GPS propio Hecate · prueba", style = MaterialTheme.typography.titleMedium)
+                        Text("Solo en parado, antena GNSS conectada y vista al cielo. Máximo 3 minutos. No cambia la posición del mapa ni sustituye el GPS del móvil.", style = MaterialTheme.typography.bodySmall)
+                        Text(if (!isConnected) "Placa desconectada. Sin lectura actual." else gnss?.display(gnssNow) ?: gnssMessage, style = MaterialTheme.typography.bodySmall)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = { viewModel.gnssCommand("start") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating && (boardInfo == null || boardInfo?.hardwareModel == "waveshare_s3_175g")) { Text("Iniciar prueba GPS") }
+                            OutlinedButton(onClick = { viewModel.gnssCommand("status") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Consultar estado GPS") }
+                            OutlinedButton(onClick = { viewModel.gnssCommand("stop") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Parar prueba GPS") }
+                        }
+                        Text("Al navegar, desconectar o caducar la sesión, la lectura se detiene. No se reinicia ni se reconfigura el módulo. Requiere firmware de prueba compatible.", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            if (section == "board") {
             Text(
                 text = stringResource(R.string.ble_section),
                 style = MaterialTheme.typography.titleMedium
@@ -199,13 +232,15 @@ fun MainScreen(
                 }
             }
 
-            com.example.displayconnect.ui.components.AltitudeStatusCard(altitudeStatus)
-
             if (isConnected) com.example.displayconnect.ui.components.BoardSettingsCard(
                 info = boardInfo, busy = boardBusy, navigating = uiState.isNavigating,
                 message = boardMessage, onIdentify = viewModel::identifyBoard,
                 onRename = viewModel::renameBoard, onRefresh = viewModel::refreshBoardInfo)
-
+            OutlinedButton(onClick = onNavigateToSettings, modifier = Modifier.fillMaxWidth()) {
+                Text("Extras de la placa")
+            }
+            }
+            if (section == "routes") {
             Text(
                 text = stringResource(R.string.navigation_section),
                 style = MaterialTheme.typography.titleMedium
@@ -377,6 +412,7 @@ fun MainScreen(
                 )
             }
 
+            }
             Spacer(modifier = Modifier.height(16.dp))
         }
     }
