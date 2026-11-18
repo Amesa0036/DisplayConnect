@@ -82,4 +82,8 @@
     <string name="gps_weak">GPS weak or outdated — holding the last reliable position</string>
     <string name="gps_accuracy">GPS accuracy: ±%1$d m</string>
     <string name="error_precise_location">Enable precise location in app permissions to navigate.</string>
+    <string name="setting_gps_source">Position source</string>
+    <string name="gps_source_phone">Phone GPS</string>
+    <string name="gps_source_hecate">Hecate GPS</string>
+    <string name="gps_weak_hecate">Hecate GPS signal weak - holding the last reliable position; check the sky view or switch to phone GPS in settings</string>
 </resources>
