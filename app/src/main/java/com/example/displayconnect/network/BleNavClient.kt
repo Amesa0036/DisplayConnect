@@ -94,11 +94,14 @@ class BleNavClient(context: Context) {
     private val otaLines = Channel<String>(capacity = Channel.BUFFERED)
     private val readAck = AtomicReference<CompletableDeferred<Result<ByteArray>>?>(null)
     private var boardReply: CompletableDeferred<JSONObject>? = null
+    private var gnssReply: CompletableDeferred<JSONObject>? = null
+    private var gnssReplyId: String? = null
 
     private fun clearBoardSession() {
         _boardInfo.value = null
         boardDecoder.reset()
         synchronized(this) { boardReply?.cancel(); boardReply = null; boardReplyId = null }
+        synchronized(this) { gnssReply?.cancel(); gnssReply = null; gnssReplyId = null }
     }
 
     /** A command never enters the conflated navigation channel. One request at a time. */
@@ -147,6 +150,43 @@ class BleNavClient(context: Context) {
         }
     }
 
+    /** Peticion/respuesta gnss_diag (respuestas type "gnss_reply"). Comparte el
+     *  candado de placa: un comando cada vez y nunca por el canal conflado de
+     *  navegacion. El caller decide ok/running/supported a partir del JSON. */
+    suspend fun gnssCommand(op: String): Result<JSONObject> = boardMutex.withLock {
+        try {
+            val connection = gatt ?: error("La placa no esta conectada")
+            val characteristic = rxCharacteristic ?: error("La placa no esta lista")
+            check(_connectionState.value == ConnectionState.CONNECTED) { "La placa no esta conectada" }
+            val address = targetAddress
+            val identity = _boardInfo.value ?: error("Lee primero la identidad de la placa")
+            check(identity.address == address) { "La identidad corresponde a otra placa" }
+            val id = UUID.randomUUID().toString()
+            val reply = CompletableDeferred<JSONObject>()
+            synchronized(this) { gnssReplyId = id; gnssReply = reply }
+            val request = JSONObject()
+                .put("type", "gnss_diag")
+                .put("request_id", id)
+                .put("board_id", identity.id)
+                .put("op", op)
+            val written = writeMutex.withLock {
+                check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+                writeInChunks(connection, characteristic, ("\n" + request + "\n").toByteArray(Charsets.UTF_8))
+            }
+            check(written) { "No se pudo enviar la peticion GNSS a la placa" }
+            val response = withTimeoutOrNull(5000) { reply.await() }
+                ?: error("La placa no responde a gnss_diag; este firmware no ofrece GPS propio")
+            check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
+            Result.success(response)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Result.failure(e)
+        } finally {
+            synchronized(this) { gnssReply?.cancel(); gnssReply = null; gnssReplyId = null }
+        }
+    }
+
     private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
         if (connection !== gatt) return
         // OTA replies may arrive without a trailing newline; accept a bare OTA: chunk as a line.
@@ -165,6 +205,8 @@ class BleNavClient(context: Context) {
                 synchronized(this) {
                     if (json.optString("type") == "board_reply" && json.optString("request_id") == boardReplyId)
                         boardReply?.complete(json)
+                    else if (json.optString("type") == "gnss_reply" && json.optString("request_id") == gnssReplyId)
+                        gnssReply?.complete(json)
                 }
             } catch (_: Exception) { }
         }
