@@ -24,8 +24,9 @@ object FirmwareRelease {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun fetchLatest(): Result<Manifest> = withContext(Dispatchers.IO) {
+    suspend fun fetchLatest(hardwareModel: String?): Result<Manifest> = withContext(Dispatchers.IO) {
         runCatching {
+            HardwareUpdatePolicy.requireLegacyOtaTarget(hardwareModel)
             val release = getJson(RELEASE_URL)
             val assets = release.optJSONArray("assets")
                 ?: error("La release no tiene archivos")
