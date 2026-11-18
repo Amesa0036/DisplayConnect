@@ -72,30 +72,38 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
                 started = true
                 if (reply.optBoolean("valid_fix", false)) {
                     failures = 0; backoffMs = pollMs
-                    val lat = reply.optDouble("latitude", Double.NaN)
-                    val lon = reply.optDouble("longitude", Double.NaN)
-                    val hdop = reply.optDouble("hdop", Double.NaN)
-                    val fixAgeMs = reply.optLong("fix_age_ms", Long.MAX_VALUE)
-                    if (lat.isFinite() && lat in -90.0..90.0 && lon.isFinite() && lon in -180.0..180.0 && hdop.isFinite() && hdop in 0.0..8.0 && fixAgeMs in 0..3000) {
-                        val speed = reply.optDouble("speed_mps", Double.NaN)
-                        val course = reply.optDouble("course_deg", Double.NaN)
-                        val altMsl = reply.optDouble("altitude_msl_m", Double.NaN).takeIf { it.isFinite() }
-                        emit(LocationUpdate(
-                            lat = lat,
-                            lon = lon,
-                            bearing = if (course.isFinite()) course.toFloat() else Float.NaN,
-                            speedMps = if (speed.isFinite()) speed.toFloat() else Float.NaN,
-                            // Estimacion documentada: el LC76G no expone accuracy;
-                            // se aproxima con HDOP x 5 m (UERE tipico en exterior).
-                            accuracyM = (hdop * 5.0).toFloat().coerceAtLeast(1f),
-                            elapsedMs = SystemClock.elapsedRealtime() - fixAgeMs,
-                            altitudeMslM = altMsl))
-                    }
+                    decodeFix(reply, SystemClock.elapsedRealtime())?.let { emit(it) }
                 }
                 delay(pollMs)
             }
         } finally {
-            if (started) runCatching { navClient.gnssRawCommand("stop") }
+            if (started) kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") }
+            }
         }
     }
+    companion object {
+        /** HDOP x 5 m is an estimate, not a measured receiver accuracy.
+         * Reject poor HDOP rather than clamping it into the filter's valid range. */
+        internal fun decodeFix(reply: org.json.JSONObject, receivedMs: Long): LocationUpdate? {
+            if (reply.optInt("protocol", -1) != 1 || reply.optString("source") != "lc76g" ||
+                !reply.optBoolean("ok") || !reply.optBoolean("reader") || !reply.optBoolean("supported") ||
+                !reply.optBoolean("running") || !reply.optBoolean("valid_fix") ||
+                reply.optInt("quality", 0) !in 1..2 || reply.optInt("satellites", 0) !in 1..99) return null
+            val lat = reply.optDouble("latitude", Double.NaN)
+            val lon = reply.optDouble("longitude", Double.NaN)
+            val hdop = reply.optDouble("hdop", Double.NaN)
+            val age = reply.optLong("fix_age_ms", Long.MAX_VALUE)
+            if (!lat.isFinite() || lat !in -90.0..90.0 || !lon.isFinite() || lon !in -180.0..180.0 ||
+                !hdop.isFinite() || hdop !in 0.0..8.0 || age !in 0..3000 || age > receivedMs) return null
+            val speed = reply.optDouble("speed_mps", Double.NaN).takeIf { it.isFinite() && it >= 0 }
+            val course = reply.optDouble("course_deg", Double.NaN).takeIf { it.isFinite() && it in 0.0..360.0 }
+            return LocationUpdate(lat = lat, lon = lon,
+                bearing = course?.toFloat() ?: Float.NaN,
+                speedMps = speed?.toFloat() ?: Float.NaN,
+                accuracyM = (hdop * 5).toFloat().coerceAtLeast(1f), elapsedMs = receivedMs - age,
+                altitudeMslM = reply.optDouble("altitude_msl_m", Double.NaN).takeIf { it.isFinite() })
+        }
+    }
+
 }
