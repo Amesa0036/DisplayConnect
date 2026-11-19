@@ -72,7 +72,7 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
                 started = true
                 if (reply.optBoolean("valid_fix", false)) {
                     failures = 0; backoffMs = pollMs
-                    decodeFix(reply, SystemClock.elapsedRealtime())?.let { emit(it) }
+                    decodeFix(reply, SystemClock.elapsedRealtime(), System.currentTimeMillis())?.let { emit(it) }
                 }
                 delay(pollMs)
             }
@@ -85,7 +85,7 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
     companion object {
         /** HDOP x 5 m is an estimate, not a measured receiver accuracy.
          * Reject poor HDOP rather than clamping it into the filter's valid range. */
-        internal fun decodeFix(reply: org.json.JSONObject, receivedMs: Long): LocationUpdate? {
+        internal fun decodeFix(reply: org.json.JSONObject, receivedMs: Long, wallMs: Long = System.currentTimeMillis()): LocationUpdate? {
             if (reply.optInt("protocol", -1) != 1 || reply.optString("source") != "lc76g" ||
                 !reply.optBoolean("ok") || !reply.optBoolean("reader") || !reply.optBoolean("supported") ||
                 !reply.optBoolean("running") || !reply.optBoolean("valid_fix") ||
@@ -96,6 +96,12 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
             val age = reply.optLong("fix_age_ms", Long.MAX_VALUE)
             if (!lat.isFinite() || lat !in -90.0..90.0 || !lon.isFinite() || lon !in -180.0..180.0 ||
                 !hdop.isFinite() || hdop !in 0.0..8.0 || age !in 0..3000 || age > receivedMs) return null
+            // MIN3 used the PC clock. In navigation the phone owns the
+            // current wall clock, so reject buffered dates/time explicitly.
+            // A missing field from old firmware fails closed, never silently
+            // falls back to the phone GPS. Its clock must be correct.
+            val receiverUtc = reply.optLong("utc_unix_ms", 0L)
+            if (!HecateFixTime.isCurrent(receiverUtc, wallMs)) return null
             val speed = reply.optDouble("speed_mps", Double.NaN).takeIf { it.isFinite() && it >= 0 }
             val course = reply.optDouble("course_deg", Double.NaN).takeIf { it.isFinite() && it in 0.0..360.0 }
             return LocationUpdate(lat = lat, lon = lon,
