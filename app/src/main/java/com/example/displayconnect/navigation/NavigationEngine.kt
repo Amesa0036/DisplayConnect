@@ -106,6 +106,14 @@ class NavigationEngine(
     private var gpsFilter: GpsFilter? = null
     private var gpsWatchdog: Job? = null
     private var lastAcceptedMs = 0L
+    private val initialGate = InitialRouteGate()
+    @Volatile private var initialToken = java.util.UUID.randomUUID().toString()
+    private data class InitialSelection(val token: String,val segment: Int,val requestedMs: Long)
+    private val initialSelection = java.util.concurrent.atomic.AtomicReference<InitialSelection?>(null)
+    private var initialOverrideSegment: Int? = null
+    fun selectInitialRoute(token: String, segment: Int) {
+        initialSelection.set(InitialSelection(token,segment,SystemClock.elapsedRealtime()))
+    }
     private val advanceGuard = RouteAdvanceGuard()
     private var guardedProgress: com.example.displayconnect.routing.TripProgress? = null
     private var traceRouteEpoch = 0
@@ -113,9 +121,18 @@ class NavigationEngine(
 
     private fun traceRoute(value: RouteData, reason: String) {
         traceRouteEpoch++
+        initialGate.reset(); initialToken=java.util.UUID.randomUUID().toString(); initialSelection.set(null);initialOverrideSegment=null
+        TransmissionHub.updateInitialRoute(null)
         advanceGuard.reset(); guardedProgress = null; motionEvidenceAtMs = 0L
-        trace.record("route", mapOf("epoch" to traceRouteEpoch, "reason" to reason, "distance_m" to value.distanceM,
+        val geometryId=java.security.MessageDigest.getInstance("SHA-256").digest(
+            value.coordinates.joinToString(";") { "${it.lat},${it.lon}" }.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 255) }
+        trace.record("route", mapOf("epoch" to traceRouteEpoch,"geometry_id" to geometryId, "reason" to reason, "distance_m" to value.distanceM,
             "duration_s" to value.durationS, "point_count" to value.coordinates.size, "gpx" to gpxMode))
+        value.snappedWaypoints.forEachIndexed { i, p ->
+            trace.record("route_waypoint",mapOf("epoch" to traceRouteEpoch,"index" to i,"lat" to p.lat,"lon" to p.lon,
+                "snap_distance_m" to value.waypointDistancesM.getOrNull(i)))
+        }
         value.coordinates.chunked(128).forEachIndexed { i, chunk ->
             trace.record("route_geometry", mapOf("epoch" to traceRouteEpoch,"chunk" to i,
                 "coordinates_lat_lon" to chunk.joinToString(";") { "${it.lat},${it.lon}" }))
@@ -177,11 +194,22 @@ class NavigationEngine(
                     // Reopening the same trip near its route works without another routing request.
                     stage = NavigationStage.ROUTE
                     val selected = if (prepared != null && prepared.coordinates.size >= 2) {
+                        trace.record("route_selection",mapOf("source" to "gpx","stage" to "selected"))
                         prepared
                     } else {
                         val saved = offlineMap.findRoute(origin, dest, settings.routeProfile)
-                        saved ?: routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
-                            error("Não foi possível calcular a rota. Confira a internet e o destino.")
+                        trace.record("route_selection",mapOf("stage" to "cache_check","hit" to (saved!=null),"reason" to if(saved!=null) "compatible_saved_route" else "no_compatible_saved_route",
+                            "origin_lat" to origin.lat,"origin_lon" to origin.lon,"profile" to settings.routeProfile.storageKey))
+                        if(saved!=null) {
+                            trace.record("route_selection",mapOf("source" to "cache","reason" to "same_destination_profile_projectable",
+                                "cache_age_ms" to null))
+                            saved
+                        } else {
+                            trace.record("route_selection",mapOf("source" to "network","stage" to "requested"))
+                            routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
+                                trace.record("route_selection",mapOf("source" to "network","stage" to "failed"))
+                                error("Não foi possível calcular a rota. Confira a internet e o destino.")
+                            }.also { trace.record("route_selection",mapOf("source" to "network","stage" to "selected")) }
                         }
                     }
                     stage = NavigationStage.CACHE
@@ -249,6 +277,7 @@ class NavigationEngine(
     fun stopNavigation() {
         if (locationJob != null) trace.record("session_stop", emptyMap())
         advanceGuard.reset(); guardedProgress = null; motionEvidenceAtMs = 0L
+        initialGate.reset(); initialSelection.set(null); initialOverrideSegment=null; TransmissionHub.updateInitialRoute(null)
         cancelTimedJoin()
         hasJoinedTrack = false
         gpxResumeSeed = null
@@ -510,14 +539,75 @@ class NavigationEngine(
         return accepted
     }
 
+    private suspend fun holdUnconfirmedInitial(raw: LocationUpdate, calc: RouteProgressCalculator?): Boolean {
+        currentCoroutineContext().ensureActive()
+        if(initialGate.confirmed) return false
+        val point=LatLon(raw.lat,raw.lon)
+        val candidates=calc?.initialCandidates(point,raw.accuracyM) ?: emptyList()
+        val preview=calc?.update(point,commit=false) ?: com.example.displayconnect.routing.TripProgress()
+        val reason=initialGate.assess(candidates,preview,raw.accuracyM)
+        val fresh=SystemClock.elapsedRealtime()-raw.elapsedMs in 0..3000 && raw.accuracyM in 0f..40f
+        val choice=initialSelection.getAndSet(null)
+        if(reason!=null) {
+            trace.record("initial_match",mapOf("epoch" to traceRouteEpoch,"reason" to reason,
+                "accuracy_estimate_m" to raw.accuracyM,"fresh" to fresh,"candidate_count" to candidates.size))
+            candidates.forEach { trace.record("initial_candidate",mapOf("epoch" to traceRouteEpoch,
+                "segment" to it.segment,"remaining_m" to it.remainingM,"lateral_m" to it.distanceM)) }
+            if(choice!=null) {
+                val valid=choice.token==initialToken && fresh &&
+                    SystemClock.elapsedRealtime()-choice.requestedMs in 0..3000
+                trace.record("initial_choice",mapOf("epoch" to traceRouteEpoch,"segment" to choice.segment,
+                    "fresh_token" to valid,"kind" to if(choice.segment==-2) "user_confirms_destination" else "user_selects_branch"))
+                if(valid && choice.segment==-2) {
+                    // User's explicit statement, not a GPS arrival determination.
+                    onNavigationEnded(); return true
+                }
+                if(valid && initialGate.confirmExplicit(choice.segment,candidates)) {
+                    initialOverrideSegment=choice.segment
+                    advanceGuard.reset();guardedProgress=null;motionEvidenceAtMs=0
+                    TransmissionHub.updateInitialRoute(null)
+                    return false
+                }
+            }
+            TransmissionHub.updateInitialRoute(TransmissionHub.InitialRouteUi(initialToken,
+                candidates.map {
+                    val total=route?.distanceM ?: 0.0
+                    val label=when {
+                        it.remainingM<=maxOf(30.0,total*0.1) -> "Tramo final"
+                        it.remainingM>=total*0.9 -> "Inicio de ruta"
+                        else -> "Tramo intermedio"
+                    }
+                    TransmissionHub.InitialRouteChoice(it.segment,it.remainingM,it.distanceM.toInt(),label)
+                },fresh))
+            TransmissionHub.updateProgressGuard("Inicio sin confirmar. Elige un tramo solo si lo reconoces, o espera y para.")
+            val trip=com.example.displayconnect.routing.TripProgress()
+            TransmissionHub.updateTripProgress(trip)
+            val message=NavMessage(raw.lat,raw.lon,0f,"Inicio sin confirmar",-1,"",emptyList(),
+                userScreenPoint=null,remainingDistanceM=null,remainingDurationS=null,
+                language=AppLanguage.language.value,gpsWeak=!fresh,maneuver="unknown")
+            lastMessage=message;TransmissionHub.updateLiveNav(message)
+            trace.record("nav_frame",mapOf("epoch" to traceRouteEpoch,"remaining_m" to null,
+                "maneuver" to "unknown","distance_to_maneuver_m" to -1,"initial_unconfirmed" to true))
+            navClient.sendNavMessage(message.toJson())
+            return true
+        }
+        trace.record("initial_match",mapOf("epoch" to traceRouteEpoch,"reason" to "unique_nonarrival",
+            "candidate_count" to candidates.size))
+        TransmissionHub.updateInitialRoute(null)
+        return false
+    }
+
     private fun sendWeakGpsFrame() {
         weakJoinCancellation.set(true)
         TransmissionHub.updateGpxJoinOptions(TransmissionHub.gpxJoinOptions.value.map {
             it.copy(autoRemainingMs = null, autoFraction = 0f)
         })
         altitudeEstimator.reset()
+        TransmissionHub.initialRoute.value?.let { TransmissionHub.updateInitialRoute(it.copy(fresh=false)) }
         val previous = lastMessage ?: return
         if (previous.gpsWeak) return
+        trace.record("nav_weak_frame",mapOf("epoch" to traceRouteEpoch,"initial_unconfirmed" to
+            (TransmissionHub.initialRoute.value!=null),"reason" to "position_timeout"))
         previous.copy(altitudeWgs84M = null, altitudeAccuracyM = null, gpsWeak = true, speedKmh = null, speedLimitKmh = null, speedLimitState = "gps_weak").also { lastMessage = it; navClient.sendNavMessage(it.toJson()) }
     }
 
@@ -539,12 +629,15 @@ class NavigationEngine(
             raw.bearing, raw.speedMps, raw.accuracyM)
         val guardActive = boardGnss && !gpxMode
         val calculator = progressCalculator
-        val preview = calculator?.update(rawPosition, reliableBearing, commit = !guardActive)
+        if (guardActive && holdUnconfirmedInitial(raw, calculator)) return@withContext
+        val explicitSegment=initialOverrideSegment.also { initialOverrideSegment=null }
+        val preview = calculator?.update(rawPosition, reliableBearing, commit = !guardActive,
+            explicitInitialSegment=explicitSegment)
             ?: com.example.displayconnect.routing.TripProgress()
         val decision = if (guardActive) advanceGuard.evaluate(RouteAdvanceGuard.Fix(rawPosition,
             raw.accuracyM, raw.speedMps, raw.elapsedMs), preview.remainingDistanceM) else null
         var progress = if (decision == null || decision.accept) {
-            if (guardActive) calculator?.update(rawPosition,reliableBearing)
+            if (guardActive) calculator?.update(rawPosition,reliableBearing,explicitInitialSegment=explicitSegment)
             preview.also { guardedProgress = it }
         } else guardedProgress ?: preview
         TransmissionHub.updateProgressGuard(if (decision?.warn == true)
@@ -632,6 +725,8 @@ class NavigationEngine(
                     gpxRejoinStrikes = 0
                     gpxRejoinAttempts++
                 }
+                trace.record("route_selection",mapOf("source" to "network","stage" to "reroute_selected",
+                    "origin_lat" to raw.lat,"origin_lon" to raw.lon))
                 route = replacement
                 traceRoute(replacement, "reroute_installed")
                 progressCalculator = calculator
@@ -773,6 +868,8 @@ class NavigationEngine(
             }
         }
         } else { reroutePolicy.clearEvidence() }
+        // A replacement is also an unconfirmed initial association, never a free pass.
+        if (guardActive && holdUnconfirmedInitial(raw, progressCalculator)) return@withContext
         val deviated = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         if (deviated) progress = progress.copy(offRoute = true,
             remainingDistanceM = null, remainingDurationS = null)
