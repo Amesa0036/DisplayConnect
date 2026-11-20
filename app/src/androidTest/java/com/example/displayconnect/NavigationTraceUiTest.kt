@@ -34,7 +34,12 @@ class NavigationTraceUiTest {
         TransmissionHub.updateProgressGuard("Avance retenido: movimiento o tramo sin confirmar. La guia conserva el ultimo avance aceptado.")
         try {
             compose.setContent { DisplayConnectTheme {
-                NavMirror(nav=null,trip=TripProgress(379,120),destLabel="Prueba sintetica",onStop={})
+                androidx.compose.material3.Surface(color=androidx.compose.material3.MaterialTheme.colorScheme.background) {
+                    NavMirror(nav=NavMessage(lat=0.0,lon=0.0,bearing=0f,instruction="Gira a la derecha",
+                        distanceM=41,street="Calle de prueba",routeScreenPoints=emptyList(),userScreenPoint=null,
+                        remainingDistanceM=379,remainingDurationS=120,maneuver="right",speedKmh=0),
+                        trip=TripProgress(379,120),destLabel="Prueba sintetica",onStop={})
+                }
             } }
             compose.onNodeWithText("Avance retenido",substring=true).assertIsDisplayed()
             compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
