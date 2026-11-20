@@ -20,5 +20,8 @@ data class RouteData(
     val distanceM: Double = 0.0,
     val durationS: Double = 0.0,
     val segmentDistancesM: List<Double> = emptyList(),
-    val segmentDurationsS: List<Double> = emptyList()
+    val segmentDurationsS: List<Double> = emptyList(),
+    // Optional current network response metadata. Deliberately not inferred for cache files.
+    val snappedWaypoints: List<LatLon> = emptyList(),
+    val waypointDistancesM: List<Double> = emptyList()
 )
