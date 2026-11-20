@@ -30,6 +30,9 @@ object TransmissionHub {
     val navigationError: StateFlow<String?> = _navigationError.asStateFlow()
     fun navigationFailed(message: String) { _navigationError.value = message }
     fun clearNavigationError() { _navigationError.value = null }
+    private val _progressGuardMessage = MutableStateFlow<String?>(null)
+    val progressGuardMessage = _progressGuardMessage.asStateFlow()
+    fun updateProgressGuard(message: String?) { _progressGuardMessage.value = message }
     private val _tripProgress = MutableStateFlow(TripProgress())
     val tripProgress: StateFlow<TripProgress> = _tripProgress.asStateFlow()
 
@@ -72,6 +75,7 @@ object TransmissionHub {
         _offlineMap.value = OfflineMapState()
         _gps.value = com.example.displayconnect.navigation.GpsStatus()
         _tripProgress.value = TripProgress()
+        _progressGuardMessage.value = null
         _liveNav.value = null
         _gpxJoinOptions.value = emptyList()
         _isNavigating.value = active
