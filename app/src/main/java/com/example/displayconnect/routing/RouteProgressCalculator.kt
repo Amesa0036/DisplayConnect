@@ -32,7 +32,7 @@ class RouteProgressCalculator(private val route: RouteData) {
      * distancia contradice el rumbo y hay otra rama cercana coherente con el,
      * se cambia de rama. Sin rumbo fiable el comportamiento es el clasico.
      */
-    fun update(location: LatLon, bearing: Float? = null, commit: Boolean = true): TripProgress {
+    fun update(location: LatLon, bearing: Float? = null, commit: Boolean = true, explicitInitialSegment: Int? = null): TripProgress {
         if (points.size < 2 || !location.lat.isFinite() || !location.lon.isFinite()) return TripProgress()
         val cosLat = cos(Math.toRadians(location.lat))
         fun segmentDistance(i: Int, location: LatLon): Match {
@@ -94,6 +94,8 @@ class RouteProgressCalculator(private val route: RouteData) {
                 }
             }
         }
+        // Only a fresh explicit choice may override nearest-branch selection for this one update.
+        explicitInitialSegment?.takeIf { it in all }?.let { found=segmentDistance(it,location) }
         // Do not present a made-up ETA when GPS is far from this route.
         if (found.distance > 80) return TripProgress(offRoute = true, distanceFromRouteM = found.distance)
         if (commit) lastSegment = found.index
@@ -108,6 +110,35 @@ class RouteProgressCalculator(private val route: RouteData) {
             if (route.durationS > 0) ceil(remainingS).toInt().coerceAtLeast(0) else null,
             matchedPosition = matched, distanceFromRouteM = found.distance, routeBearing = direction, matchedSegment = i
         )
+    }
+
+    data class InitialCandidate(val segment: Int, val remainingM: Int, val distanceM: Double)
+
+    /** Pure previews. Adjacent projections with similar along-route position form one branch.
+     * The accuracy estimate supplies a heuristic margin, not a confidence interval. */
+    fun initialCandidates(location: LatLon, accuracyM: Float): List<InitialCandidate> {
+        if (points.size < 2 || !location.lat.isFinite() || !location.lon.isFinite() || location.lat !in -90.0..90.0 || location.lon !in -180.0..180.0 || !accuracyM.isFinite() || accuracyM !in 0f..40f) return emptyList()
+        val cosLat = cos(Math.toRadians(location.lat))
+        val candidates = (0 until points.lastIndex).map { i ->
+            val a=points[i]; val b=points[i+1]
+            val ax=Math.toRadians(a.lon-location.lon)*EARTH_RADIUS*cosLat
+            val ay=Math.toRadians(a.lat-location.lat)*EARTH_RADIUS
+            val dx=Math.toRadians(b.lon-a.lon)*EARTH_RADIUS*cosLat
+            val dy=Math.toRadians(b.lat-a.lat)*EARTH_RADIUS
+            val length=dx*dx+dy*dy
+            val f=if(length>0) (-(ax*dx+ay*dy)/length).coerceIn(0.0,1.0) else 0.0
+            InitialCandidate(i,ceil(distanceSuffix[i+1]+distances[i]*(1-f)).toInt(),hypot(ax+f*dx,ay+f*dy))
+        }
+        val best=candidates.minOf { it.distanceM }
+        val near=candidates.filter { it.distanceM<=minOf(80.0,best+maxOf(8.0,accuracyM.toDouble())) }
+        val groups=mutableListOf<MutableList<InitialCandidate>>()
+        for(c in near) {
+            val last=groups.lastOrNull()
+            if(last!=null && c.segment==last.last().segment+1 &&
+                abs(c.remainingM-last.first().remainingM)<=maxOf(30.0,2*accuracyM.toDouble())) last.add(c)
+            else groups.add(mutableListOf(c))
+        }
+        return groups.map { it.minBy { c -> c.distanceM } }.sortedBy { it.distanceM }
     }
 
     /**
