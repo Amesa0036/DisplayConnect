@@ -20,12 +20,14 @@ data class GnssDiagnostic(
             val satellites = json.getInt("satellites").also { check(it in 0..99) }
             val quality = json.getInt("quality").also { check(it in 0..9) }
             val reason = json.getString("reason")
-            check(reason in setOf("not_started", "running", "manual", "duration", "disconnected", "navigation", "imu_busy", "i2c_error", "invalid_length", "cancelled", "imu_capture", "poll_timeout", "restoration_fault"))
+            check(reason in setOf("not_started", "running", "manual", "duration", "disconnected", "navigation", "imu_busy", "i2c_error", "invalid_length", "cancelled", "imu_capture", "poll_timeout", "restoration_fault", "session_limit", "initial_drain_timeout", "clock_rollback", "query_free_length_invalid", "stream_without_valid_NMEA_2048B"))
             val state = if (!json.getBoolean("supported")) "GPS propio no disponible en este firmware."
-                else if (running) if (valid) "Posición GPS propia válida en esta consulta." else "Buscando señal. Sin posición válida."
+                else if (running) if (valid) "Solución GNSS pareada en esta consulta. Este panel no valida la hora absoluta ni habilita navegación." else "Buscando señal. Sin posición válida."
                 else when (reason) {
                     "i2c_error", "invalid_length", "restoration_fault" -> "Lectura detenida por error de comunicación. No se reinicia el bus."
-                    "duration" -> "Prueba terminada (3 minutos)."
+                    "initial_drain_timeout" -> "Lectura detenida: no se pudo completar el vaciado inicial."
+                    "clock_rollback", "query_free_length_invalid", "stream_without_valid_NMEA_2048B" -> "Lectura detenida por una comprobación de seguridad. No se reinicia."
+                    "duration", "session_limit" -> "Prueba terminada (3 minutos)."
                     "navigation" -> "Prueba detenida al iniciar navegación."
                     "imu_busy" -> "Prueba detenida: captura o datos IMU pendientes."
                     "disconnected" -> "Prueba detenida por desconexión."
