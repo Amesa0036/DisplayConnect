@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,9 +69,23 @@ fun NavMirror(
     destLabel: String,
     onStop: () -> Unit,
     joinOptions: List<TransmissionHub.GpxJoinOption> = emptyList(),
-    onSelectJoin: (Int) -> Unit = {}
+    onSelectJoin: (Int) -> Unit = {},
+    onSelectInitial: (String,Int) -> Unit = { _, _ -> }
 ) {
     val guardMessage by TransmissionHub.progressGuardMessage.collectAsState()
+    val initial by TransmissionHub.initialRoute.collectAsState()
+    var pendingInitial by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf<Pair<String,Int>?>(null) }
+    pendingInitial?.let { choice ->
+        androidx.compose.material3.AlertDialog(onDismissRequest={pendingInitial=null},
+            title={ Text(if(choice.second==-2) "¿Ya estás en el destino?" else "¿Reconoces este tramo?") },
+            text={Text(if(choice.second==-2) "Se cerrará la ruta por tu confirmación, no porque el GPS lo haya demostrado."
+                else "Esta elección fija el tramo inicial. La distancia es una estimación, no confirma tu posición física.")},
+            confirmButton={androidx.compose.material3.TextButton(onClick={
+                pendingInitial=null
+                if(initial?.token==choice.first && initial?.fresh==true) onSelectInitial(choice.first,choice.second)
+            },enabled=initial?.token==choice.first && initial?.fresh==true){Text("Confirmar")}},
+            dismissButton={androidx.compose.material3.TextButton(onClick={pendingInitial=null}){Text("Cancelar")}})
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -126,7 +141,10 @@ fun NavMirror(
                     .border(3.dp, Outline, CircleShape),
                 contentAlignment = Alignment.Center
             ) {
-                if (nav == null) {
+                if (initial != null) {
+                    Text("Inicio sin confirmar",fontSize=20.sp,color=Warn,textAlign=TextAlign.Center,
+                        modifier=Modifier.padding(12.dp))
+                } else if (nav == null) {
                     Text(
                         "Calculando ruta…",
                         fontSize = 20.sp,
@@ -149,7 +167,7 @@ fun NavMirror(
                             )
                         }
                         Text(
-                            text = formatDistance(nav.distanceM),
+                            text = if(nav.distanceM<0) "--" else formatDistance(nav.distanceM),
                             fontSize = 46.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -161,6 +179,7 @@ fun NavMirror(
 
         // Calle / aviso
         val warning = when {
+            initial != null -> if(initial?.fresh==true) "Inicio sin confirmar" else "Sin posición GPS fresca"
             nav?.offRoute == true || trip.offRoute -> nav?.instruction?.takeIf { it.isNotBlank() } ?: "Fuera de ruta"
             nav?.gpsWeak == true -> "GPS débil"
             else -> null
@@ -176,6 +195,22 @@ fun NavMirror(
             // cuando el mensaje cambia de longitud.
             modifier = Modifier.fillMaxWidth().height(56.dp)
         )
+
+        initial?.let { state ->
+            Column(Modifier.fillMaxWidth().heightIn(max=150.dp).verticalScroll(rememberScrollState()),
+                verticalArrangement=Arrangement.spacedBy(4.dp)) {
+                Text(if(state.fresh) "Elige solo si reconoces el tramo. Puedes esperar o parar."
+                    else "Sin posición GPS fresca. Espera o para.",fontSize=12.sp,color=Warn)
+                state.choices.forEach { option ->
+                    androidx.compose.material3.OutlinedButton(onClick={pendingInitial=state.token to option.segment},
+                        enabled=state.fresh,modifier=Modifier.fillMaxWidth()) {
+                        Text("${option.label}: ~${option.remainingM} m por recorrer",fontSize=12.sp)
+                    }
+                }
+                androidx.compose.material3.OutlinedButton(onClick={pendingInitial=state.token to -2},
+                    enabled=state.fresh,modifier=Modifier.fillMaxWidth()) { Text("Ya estoy en el destino",fontSize=12.sp) }
+            }
+        }
 
         // Ramas de enganche cuando la traza es ambigua: el usuario elige
         // expresamente por cual empezar (nunca se infiere por cercania).
@@ -239,8 +274,8 @@ fun NavMirror(
         }
 
         // Barra inferior: km, minutos, llegada
-        val remM = trip.remainingDistanceM ?: nav?.remainingDistanceM
-        val remS = trip.remainingDurationS ?: nav?.remainingDurationS
+        val remM = if(initial!=null) null else trip.remainingDistanceM ?: nav?.remainingDistanceM
+        val remS = if(initial!=null) null else trip.remainingDurationS ?: nav?.remainingDurationS
         Row(
             modifier = Modifier
                 .fillMaxWidth()
