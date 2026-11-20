@@ -54,18 +54,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val gnssMessage = _gnssMessage.asStateFlow()
     private val _gnssBusy = MutableStateFlow(false)
     val gnssBusy = _gnssBusy.asStateFlow()
+    private var gnssBenchJob: kotlinx.coroutines.Job? = null
+    fun cancelGnssBench() { gnssBenchJob?.cancel() }
     fun gnssCommand(op: String) {
-        if (_gnssBusy.value || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _shadowBusy.value) return
+        if (op == "stop" && gnssBenchJob?.isActive == true) {
+            gnssBenchJob?.cancel()
+            return
+        }
+        if (gnssBenchJob?.isActive == true || _gnssBusy.value || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _shadowBusy.value) return
         if (_uiState.value.isNavigating) return
         _gnssBusy.value = true
         _gnssDiagnostic.value = null
         _gnssMessage.value = "Consultando GPS propio..."
-        viewModelScope.launch {
+        gnssBenchJob = viewModelScope.launch {
             try {
                 if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
-                _gnssDiagnostic.value = navClient.gnssCommand(op).getOrThrow()
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e
-            } catch (e: Exception) { _gnssMessage.value = "No confirmado: ${e.message}. Consulta estado antes de repetir."
+                if (op == "start") {
+                    com.example.displayconnect.network.GnssBenchSession(
+                        command = { navClient.gnssRawCommand(it) },
+                        monotonic = { android.os.SystemClock.elapsedRealtime() }
+                    ).run { reply ->
+                        _gnssDiagnostic.value = com.example.displayconnect.network.GnssDiagnostic.parse(reply, android.os.SystemClock.elapsedRealtime())
+                    }
+                } else _gnssDiagnostic.value = navClient.gnssCommand(op).getOrThrow()
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                _gnssDiagnostic.value = null
+                _gnssMessage.value = "Prueba cancelada. Se ha intentado parar; consulta estado para confirmar. No reinicies la prueba."
+                throw e
+            } catch (e: Exception) {
+                _gnssDiagnostic.value = null
+                _gnssMessage.value = "Prueba sin confirmar. Consulta estado antes de repetir; no se reinicia automaticamente."
             } finally { _gnssBusy.value = false }
         }
     }
