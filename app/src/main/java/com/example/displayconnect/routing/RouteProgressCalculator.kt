@@ -8,7 +8,8 @@ data class TripProgress(
     val offRoute: Boolean = false,
     val matchedPosition: LatLon? = null,
     val distanceFromRouteM: Double? = null,
-    val routeBearing: Float? = null
+    val routeBearing: Float? = null,
+    val matchedSegment: Int? = null
 )
 
 /** Projects GPS onto the route; remaining distance follows its bends, not a straight line. */
@@ -31,7 +32,7 @@ class RouteProgressCalculator(private val route: RouteData) {
      * distancia contradice el rumbo y hay otra rama cercana coherente con el,
      * se cambia de rama. Sin rumbo fiable el comportamiento es el clasico.
      */
-    fun update(location: LatLon, bearing: Float? = null): TripProgress {
+    fun update(location: LatLon, bearing: Float? = null, commit: Boolean = true): TripProgress {
         if (points.size < 2 || !location.lat.isFinite() || !location.lon.isFinite()) return TripProgress()
         val cosLat = cos(Math.toRadians(location.lat))
         fun segmentDistance(i: Int, location: LatLon): Match {
@@ -95,7 +96,7 @@ class RouteProgressCalculator(private val route: RouteData) {
         }
         // Do not present a made-up ETA when GPS is far from this route.
         if (found.distance > 80) return TripProgress(offRoute = true, distanceFromRouteM = found.distance)
-        lastSegment = found.index
+        if (commit) lastSegment = found.index
         val i = found.index
         val remainingM = distanceSuffix[i + 1] + distances[i] * (1 - found.fraction)
         val remainingS = durationSuffix[i + 1] + durations[i] * (1 - found.fraction)
@@ -105,7 +106,7 @@ class RouteProgressCalculator(private val route: RouteData) {
         return TripProgress(
             ceil(remainingM).toInt().coerceAtLeast(0),
             if (route.durationS > 0) ceil(remainingS).toInt().coerceAtLeast(0) else null,
-            matchedPosition = matched, distanceFromRouteM = found.distance, routeBearing = direction
+            matchedPosition = matched, distanceFromRouteM = found.distance, routeBearing = direction, matchedSegment = i
         )
     }
 
