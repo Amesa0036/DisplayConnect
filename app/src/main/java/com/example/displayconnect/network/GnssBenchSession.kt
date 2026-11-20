@@ -18,6 +18,11 @@ internal class GnssBenchSession(
         try {
             startSent = true // even uncertain transport must never resend start
             var reply = command("start").getOrThrow()
+            // A definite refusal never grants ownership of a pre-existing session.
+            if (reply.has("ok") && !reply.getBoolean("ok")) {
+                terminal = true
+                error("gnss_bench_refused")
+            }
             while (true) {
                 check(reply.optBoolean("ok") && reply.optBoolean("supported") && reply.optBoolean("reader")) { "gnss_bench_refused" }
                 check(reply.optInt("protocol") == 1 && reply.optString("source") == "lc76g") { "gnss_bench_protocol" }
