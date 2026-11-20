@@ -70,6 +70,14 @@ fun MainScreen(
         viewModel.altitudeMonitor.start()
         onDispose { viewModel.altitudeMonitor.stop() }
     }
+    val benchLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(viewModel, section, benchLifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) viewModel.cancelGnssBench()
+        }
+        benchLifecycle.lifecycle.addObserver(observer)
+        onDispose { benchLifecycle.lifecycle.removeObserver(observer); viewModel.cancelGnssBench() }
+    }
     val boardInfo by viewModel.boardInfo.collectAsState()
     val boardBusy by viewModel.boardBusy.collectAsState()
     val boardMessage by viewModel.boardMessage.collectAsState()
@@ -127,14 +135,14 @@ fun MainScreen(
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("GPS propio Hecate · prueba", style = MaterialTheme.typography.titleMedium)
-                        Text("Solo en parado, antena GNSS conectada y vista al cielo. Este panel no cambia la fuente de posición elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
+                        Text("Prueba de enlace en parado, sin navegación. Consulta automática cada segundo durante un máximo de tres minutos. Mantén esta pantalla abierta. No cambia la fuente elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
                         Text(if (!isConnected) "Placa desconectada. Sin lectura actual." else gnss?.display(gnssNow) ?: gnssMessage, style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = { viewModel.gnssCommand("start") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating && (boardInfo == null || boardInfo?.hardwareModel == "waveshare_s3_175g")) { Text("Iniciar prueba GPS") }
                             OutlinedButton(onClick = { viewModel.gnssCommand("status") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Consultar estado GPS") }
-                            OutlinedButton(onClick = { viewModel.gnssCommand("stop") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Parar prueba GPS") }
+                            OutlinedButton(onClick = { viewModel.gnssCommand("stop") }, enabled = isConnected && !uiState.isNavigating) { Text("Parar prueba GPS") }
                         }
-                        Text("Los controles de esta prueba no se usan durante la navegación. La sesión se detiene al desconectar o caducar las consultas. No se reinicia ni se reconfigura el módulo. Requiere firmware compatible.", style = MaterialTheme.typography.bodySmall)
+                        Text("Un solo inicio, sin reintentos automáticos. Al salir, ir al fondo o pulsar Parar se intenta detener la lectura. El firmware también limita la sesión y la detiene al desconectar o caducar las consultas. No se reconfigura el módulo. Requiere firmware compatible.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
