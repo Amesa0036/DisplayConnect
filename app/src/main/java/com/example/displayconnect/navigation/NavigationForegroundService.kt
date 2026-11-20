@@ -39,6 +39,8 @@ class NavigationForegroundService : Service() {
             ACTION_START_ROUTE -> handleStartRoute()
             ACTION_STOP -> stopNavigationService()
             ACTION_RETRY_DOWNLOAD -> navigationEngine?.retryOfflineDownload()
+            ACTION_SELECT_INITIAL -> navigationEngine?.selectInitialRoute(
+                intent.getStringExtra(EXTRA_INITIAL_TOKEN) ?: "", intent.getIntExtra(EXTRA_JOIN_INDEX,-1))
             ACTION_SELECT_GPX_JOIN ->
                 navigationEngine?.selectGpxJoinCandidate(intent.getIntExtra(EXTRA_JOIN_INDEX, -1))
         }
@@ -225,6 +227,8 @@ class NavigationForegroundService : Service() {
         const val ACTION_START_ROUTE = "com.example.displayconnect.action.START_PREPARED_ROUTE"
         const val ACTION_STOP = "com.example.displayconnect.action.STOP_NAV"
         const val ACTION_RETRY_DOWNLOAD = "com.example.displayconnect.action.RETRY_MAP_DOWNLOAD"
+        const val ACTION_SELECT_INITIAL = "com.example.displayconnect.action.SELECT_INITIAL"
+        const val EXTRA_INITIAL_TOKEN = "extra_initial_token"
         const val ACTION_SELECT_GPX_JOIN = "com.example.displayconnect.action.SELECT_GPX_JOIN"
         const val EXTRA_JOIN_INDEX = "extra_join_index"
         const val EXTRA_DEST_LAT = "extra_dest_lat"
@@ -257,6 +261,12 @@ class NavigationForegroundService : Service() {
 
         fun retryDownload(context: Context) {
             context.startService(Intent(context, NavigationForegroundService::class.java).apply { action = ACTION_RETRY_DOWNLOAD })
+        }
+
+        fun selectInitialRoute(context: Context, token: String, segment: Int) {
+            context.startService(Intent(context, NavigationForegroundService::class.java).apply {
+                action=ACTION_SELECT_INITIAL; putExtra(EXTRA_INITIAL_TOKEN,token); putExtra(EXTRA_JOIN_INDEX,segment)
+            })
         }
 
         /** Eleccion expresa del usuario entre las ramas de enganche GPX ambiguas. */
