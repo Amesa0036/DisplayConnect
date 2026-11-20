@@ -15,10 +15,14 @@ class DisplayConnectApp : Application() {
     lateinit var navClient: BleNavClient
         private set
 
+    lateinit var navigationTrace: com.example.displayconnect.navigation.FileNavigationTrace
+        private set
+
     override fun onCreate() {
         super.onCreate()
         com.example.displayconnect.utils.AppLanguage.load(this)
         settingsRepository = SettingsRepository(this)
+        navigationTrace = com.example.displayconnect.navigation.FileNavigationTrace(java.io.File(noBackupFilesDir, "navigation-trace"))
         navClient = BleNavClient(this)
         altitudeMonitor = com.example.displayconnect.navigation.AltitudeMonitor(this)
     }
