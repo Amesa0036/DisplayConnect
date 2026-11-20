@@ -66,7 +66,8 @@ class NavigationForegroundService : Service() {
         val app = application as DisplayConnectApp
         navigationEngine?.stopNavigation()
         serviceScope.launch {
-            val source = selectPositionSource(app) ?: return@launch
+            val trace = app.navigationTrace.newSession()
+            val source = selectPositionSource(app, trace) ?: return@launch
             val engine = NavigationEngine(
                 scope = serviceScope,
                 locationTracker = source,
@@ -75,6 +76,7 @@ class NavigationForegroundService : Service() {
                 navClient = app.navClient,
                 settingsProvider = { app.settingsRepository.settings.first() },
                 onNavigationEnded = { stopNavigationService() },
+                trace = if (source is HecateGnssSource) trace else NavigationTraceSink.NONE,
                 boardGnss = source is HecateGnssSource
             )
             engine.altitudeMonitor=app.altitudeMonitor
@@ -102,7 +104,8 @@ class NavigationForegroundService : Service() {
         val app = application as DisplayConnectApp
         navigationEngine?.stopNavigation()
         serviceScope.launch {
-            val source = selectPositionSource(app) ?: return@launch
+            val trace = app.navigationTrace.newSession()
+            val source = selectPositionSource(app, trace) ?: return@launch
             val engine = NavigationEngine(
                 scope = serviceScope,
                 locationTracker = source,
@@ -111,6 +114,7 @@ class NavigationForegroundService : Service() {
                 navClient = app.navClient,
                 settingsProvider = { app.settingsRepository.settings.first() },
                 onNavigationEnded = { stopNavigationService() },
+                trace = if (source is HecateGnssSource) trace else NavigationTraceSink.NONE,
                 boardGnss = source is HecateGnssSource
             )
             engine.altitudeMonitor=app.altitudeMonitor
@@ -125,13 +129,13 @@ class NavigationForegroundService : Service() {
 
     /** Elige la fuente de posicion segun ajustes. Con HECATE no hay repliegue
      *  silencioso: si la placa no ofrece gnss_diag se avisa y no se navega. */
-    private suspend fun selectPositionSource(app: DisplayConnectApp): PositionSource? {
+    private suspend fun selectPositionSource(app: DisplayConnectApp, trace: NavigationTraceSink): PositionSource? {
         val settings = app.settingsRepository.settings.first()
         if (settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE) return LocationTracker(this)
         if (app.navClient.boardInfo.value == null) app.navClient.boardCommand("board_info")
         val reply = app.navClient.gnssRawCommand("status").getOrNull()
         if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
-            return HecateGnssSource(app.navClient)
+            return HecateGnssSource(app.navClient, trace)
         }
         com.example.displayconnect.utils.TransmissionHub.navigationFailed(
             when (com.example.displayconnect.utils.AppLanguage.language.value) {
