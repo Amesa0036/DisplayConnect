@@ -46,6 +46,34 @@ class NavigationTraceUiTest {
             capture("navigation-guard-warning.png")
         } finally { TransmissionHub.updateProgressGuard(null) }
     }
+    @Test fun unconfirmedInitialHasNoArrivalAndKeepsStopAndChoice() {
+        TransmissionHub.setNavigating(false)
+        TransmissionHub.updateInitialRoute(TransmissionHub.InitialRouteUi("synthetic-ui-token",
+            listOf(TransmissionHub.InitialRouteChoice(0,450,12),TransmissionHub.InitialRouteChoice(4,5,10)),true))
+        TransmissionHub.updateProgressGuard("Inicio sin confirmar. Elige un tramo solo si lo reconoces, o espera y para.")
+        var choices=0
+        try {
+            compose.setContent { DisplayConnectTheme {
+                androidx.compose.material3.Surface(color=androidx.compose.material3.MaterialTheme.colorScheme.background) {
+                    NavMirror(nav=NavMessage(0.0,0.0,0f,"Inicio sin confirmar",-1,"",emptyList(),
+                        userScreenPoint=null,maneuver="unknown"),trip=TripProgress(),
+                        destLabel="Prueba sintetica",onStop={},onSelectInitial={_,_->choices++})
+                }
+            } }
+            compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
+            compose.onNodeWithText("0 m").assertDoesNotExist()
+            compose.onNodeWithText("Tramo: ~450 m por recorrer").assertIsDisplayed().performClick()
+            assertEquals(0,choices)
+            compose.onNodeWithText("¿Reconoces este tramo?").assertIsDisplayed()
+            compose.onNodeWithText("Confirmar").performClick()
+            assertEquals(1,choices)
+            capture("navigation-initial-unconfirmed.png")
+            compose.runOnIdle { TransmissionHub.updateInitialRoute(TransmissionHub.initialRoute.value!!.copy(fresh=false)) }
+            compose.onNodeWithText("Tramo: ~450 m por recorrer").assertIsNotEnabled()
+            compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
+            capture("navigation-initial-no-fix.png")
+        } finally { TransmissionHub.setNavigating(false) }
+    }
     @Test fun privateTraceStaysInNoBackupAndExportsOnlyOnRequest() {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val dir=File(context.noBackupFilesDir,"trace-instrumented-synthetic")
