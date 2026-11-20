@@ -146,7 +146,7 @@ class BleNavClient(context: Context) {
             val reportedModel = response.optString("hardware_model").takeIf { it.isNotBlank() }
             val hardwareModel = HardwareUpdatePolicy.resolve(reportedModel, if (reportedModel == null) boardFirmwareVersion().getOrNull() else null)
             check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
-            val info = BoardInfo(boardId, boardName, address, hardwareModel)
+            val info = BoardInfo(boardId, boardName, address, hardwareModel, navigationDisplayCapability(response.opt("navigation_display")))
             _boardInfo.value = info
             Result.success(info)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -570,6 +570,7 @@ class BleNavClient(context: Context) {
     }
 
     fun sendNavMessage(json: String): Boolean {
+        if (_boardInfo.value?.navigationDisplay == false) return false
         if (otaActive.get()) return false
         if (_connectionState.value != ConnectionState.CONNECTED) return false
         val characteristic = rxCharacteristic ?: return false
