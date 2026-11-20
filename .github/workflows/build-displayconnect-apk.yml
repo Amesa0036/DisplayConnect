@@ -81,6 +81,16 @@ jobs:
             mkdir -p ui-evidence
             trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
 
+            # Required navigation evidence, fail rather than silently omit it.
+            adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/
+            adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-confirm-dialog.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-destination-choice.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-destination-dialog.png ui-evidence/
+            adb pull /data/local/tmp/navigation-initial-no-fix-destination.png ui-evidence/
+
       - name: Retain UI evidence
         if: always()
         uses: actions/upload-artifact@v4
