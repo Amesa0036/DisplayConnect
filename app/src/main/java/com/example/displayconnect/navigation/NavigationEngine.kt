@@ -48,6 +48,7 @@ class NavigationEngine(
     private val navClient: BleNavClient,
     private val settingsProvider: suspend () -> AppSettings,
     private val onNavigationEnded: () -> Unit = {},
+    private val trace: NavigationTraceSink = NavigationTraceSink.NONE,
     private val rejoinRoute: suspend (LatLon, LatLon, com.example.displayconnect.routing.RouteProfile, Float?) -> Result<RouteData> = routeProvider::fetchRoute
 ) {
 
@@ -105,6 +106,28 @@ class NavigationEngine(
     private var gpsFilter: GpsFilter? = null
     private var gpsWatchdog: Job? = null
     private var lastAcceptedMs = 0L
+    private val advanceGuard = RouteAdvanceGuard()
+    private var guardedProgress: com.example.displayconnect.routing.TripProgress? = null
+    private var traceRouteEpoch = 0
+    private var motionEvidenceAtMs = 0L
+
+    private fun traceRoute(value: RouteData, reason: String) {
+        traceRouteEpoch++
+        advanceGuard.reset(); guardedProgress = null; motionEvidenceAtMs = 0L
+        trace.record("route", mapOf("epoch" to traceRouteEpoch, "reason" to reason, "distance_m" to value.distanceM,
+            "duration_s" to value.durationS, "point_count" to value.coordinates.size, "gpx" to gpxMode))
+        value.coordinates.chunked(128).forEachIndexed { i, chunk ->
+            trace.record("route_geometry", mapOf("epoch" to traceRouteEpoch,"chunk" to i,
+                "coordinates_lat_lon" to chunk.joinToString(";") { "${it.lat},${it.lon}" }))
+        }
+        value.segmentDistancesM.chunked(128).forEachIndexed { i, chunk ->
+            trace.record("route_segment_distances", mapOf("epoch" to traceRouteEpoch,"chunk" to i,"metres" to chunk.joinToString(",")))
+        }
+        value.steps.forEachIndexed { i, step ->
+            trace.record("route_step",mapOf("epoch" to traceRouteEpoch,"index" to i,"street" to step.street,
+                "maneuver" to step.maneuverType,"at_m" to step.maneuverAtM))
+        }
+    }
     @Volatile private var lastMessage: NavMessage? = null
     private val statsTracker = StatsTracker()
     private val speedLimitMatcher = com.example.displayconnect.routing.SpeedLimitMatcher()
@@ -133,9 +156,11 @@ class NavigationEngine(
         TransmissionHub.setNavigating(true)
         locationJob = scope.launch {
             var stage = NavigationStage.POSITION
+            trace.record("session_start", mapOf("source" to if(boardGnss) "hecate" else "phone", "dest_lat" to dest.lat, "dest_lon" to dest.lon,"guard_policy" to "hecate-normal-v1"))
             try {
                 val settings = settingsProvider()
                 activeSettings = settings
+                trace.record("settings",mapOf("profile" to settings.routeProfile.storageKey,"nav_hz" to settings.navUpdateHz))
                 gpsFilter = GpsFilter(when (settings.routeProfile) {
                     com.example.displayconnect.routing.RouteProfile.WALKING -> 8.0
                     com.example.displayconnect.routing.RouteProfile.BIKE -> 25.0
@@ -163,6 +188,7 @@ class NavigationEngine(
                     offlineMap.saveRoute(selected, dest, settings.routeProfile)
                     route = selected
                     progressCalculator = RouteProgressCalculator(selected)
+                    traceRoute(selected, "initial")
                     retryOfflineDownload()
                     gpsWatchdog = scope.launch {
                         while (true) {
@@ -186,6 +212,7 @@ class NavigationEngine(
                 TransmissionHub.setNavigating(false)
                 val failure = navigationFailure(stage, e)
                 Log.w("DisplayConnectNav", "navigation_timeout code=${failure.name} stage=${stage.name}")
+                trace.record("session_failure",mapOf("stage" to stage.name,"failure" to failure.name))
                 TransmissionHub.navigationFailed(navigationFailureMessage(failure, AppLanguage.language.value))
                 onNavigationEnded()
             } catch (e: CancellationException) { throw e }
@@ -195,8 +222,11 @@ class NavigationEngine(
                 TransmissionHub.setNavigating(false)
                 val failure = navigationFailure(stage, e)
                 Log.w("DisplayConnectNav", "navigation_failed code=${failure.name} stage=${stage.name}")
+                trace.record("session_failure",mapOf("stage" to stage.name,"failure" to failure.name))
                 TransmissionHub.navigationFailed(navigationFailureMessage(failure, AppLanguage.language.value))
                 onNavigationEnded()
+            } finally {
+                trace.record("session_end", emptyMap())
             }
         }
     }
@@ -217,6 +247,8 @@ class NavigationEngine(
     }
 
     fun stopNavigation() {
+        if (locationJob != null) trace.record("session_stop", emptyMap())
+        advanceGuard.reset(); guardedProgress = null; motionEvidenceAtMs = 0L
         cancelTimedJoin()
         hasJoinedTrack = false
         gpxResumeSeed = null
@@ -468,6 +500,8 @@ class NavigationEngine(
             update.speedMps, update.bearing, update.elapsedMs), SystemClock.elapsedRealtime()) == true
         if (boardGnss) navClient.shadowGpsSource.clear()
         else navClient.shadowGpsSource.update(com.example.displayconnect.network.ShadowFix(update.elapsedMs, accepted, update.speedMps, update.accuracyM))
+        trace.record("position_filter", mapOf("accepted" to accepted,"lat" to update.lat,"lon" to update.lon,
+            "accuracy_estimate_m" to update.accuracyM,"speed_mps" to update.speedMps,"fix_elapsed_ms" to update.elapsedMs))
         if (accepted) lastAcceptedMs = update.elapsedMs
         if (accepted || update.elapsedMs > lastAcceptedMs || SystemClock.elapsedRealtime() - lastAcceptedMs > 5000) {
             TransmissionHub.updateGps(GpsStatus(update.accuracyM.takeIf { it.isFinite() }, lastAcceptedMs, !accepted, boardGnss))
@@ -503,8 +537,29 @@ class NavigationEngine(
         }
         lastReliableDeparture = com.example.displayconnect.routing.ForwardReroute.reliableBearing(
             raw.bearing, raw.speedMps, raw.accuracyM)
-        var progress = progressCalculator?.update(rawPosition, reliableBearing)
+        val guardActive = boardGnss && !gpxMode
+        val calculator = progressCalculator
+        val preview = calculator?.update(rawPosition, reliableBearing, commit = !guardActive)
             ?: com.example.displayconnect.routing.TripProgress()
+        val decision = if (guardActive) advanceGuard.evaluate(RouteAdvanceGuard.Fix(rawPosition,
+            raw.accuracyM, raw.speedMps, raw.elapsedMs), preview.remainingDistanceM) else null
+        var progress = if (decision == null || decision.accept) {
+            if (guardActive) calculator?.update(rawPosition,reliableBearing)
+            preview.also { guardedProgress = it }
+        } else guardedProgress ?: preview
+        TransmissionHub.updateProgressGuard(if (decision?.warn == true)
+            "Avance retenido: movimiento o tramo sin confirmar. La guia conserva el ultimo avance aceptado." else null)
+        trace.record("progress", mapOf("epoch" to traceRouteEpoch,"lat" to raw.lat,"lon" to raw.lon,
+            "candidate_segment" to preview.matchedSegment,"shown_segment" to progress.matchedSegment,
+            "candidate_remaining_m" to preview.remainingDistanceM,"shown_remaining_m" to progress.remainingDistanceM,
+            "route_distance_m" to preview.distanceFromRouteM,"guard_reason" to decision?.reason,
+            "guard_accepted" to decision?.accept,"displacement_m" to decision?.displacementM,
+            "along_delta_m" to decision?.alongDeltaM,"motion_evidence" to decision?.motionEvidence))
+        // Hold ALL branch/rejoin/reroute mutations when the same fix cannot justify progress.
+        if (decision?.accept == true && decision.motionEvidence) motionEvidenceAtMs = nowMs
+        val allowRouteMutation = decision == null ||
+            (decision.reason != "route_jump" && motionEvidenceAtMs > 0 && nowMs - motionEvidenceAtMs <= 5000)
+        if (allowRouteMutation || (gpxInitialJoinPending && decision?.reason == "initial")) {
         // Primer enganche de una traza GPX: si varias ramas estan a tiro de GPS
         // y el rumbo no distingue una sola, NO se elige en silencio (ni la mas
         // cercana ni el inicio): se publican las ramas y el usuario elige en la
@@ -578,6 +633,7 @@ class NavigationEngine(
                     gpxRejoinAttempts++
                 }
                 route = replacement
+                traceRoute(replacement, "reroute_installed")
                 progressCalculator = calculator
                 currentRoute = replacement
                 progress = candidateProgress!!
@@ -611,6 +667,7 @@ class NavigationEngine(
             }
             if (gpxRejoinStrikes >= 2 && track != null) {
                 route = track
+                traceRoute(track, "gpx_track_resumed")
                 val calculator = RouteProgressCalculator(track)
                 gpxResumeSeed?.let { calculator.seed(it) }
                 gpxResumeSeed = null
@@ -655,6 +712,7 @@ class NavigationEngine(
                         com.example.displayconnect.routing.ForwardReroute.reliableBearing(
                             raw.bearing, raw.speedMps, raw.accuracyM))
                 }
+                trace.record("reroute_requested", mapOf("epoch" to traceRouteEpoch,"lat" to raw.lat,"lon" to raw.lon))
                 Log.i("DisplayConnectRoute", "Automatic reroute requested")
             }
         } else if (gpxMode && rerouteJob == null && confirmed) {
@@ -714,6 +772,7 @@ class NavigationEngine(
                 TransmissionHub.updateGpxJoinOptions(emptyList())
             }
         }
+        } else { reroutePolicy.clearEvidence() }
         val deviated = fresh && reroutePolicy.isAway(progress.distanceFromRouteM, raw.accuracyM)
         if (deviated) progress = progress.copy(offRoute = true,
             remainingDistanceM = null, remainingDurationS = null)
@@ -777,6 +836,7 @@ class NavigationEngine(
             com.example.displayconnect.routing.SpeedLimitReading(kmh = settings.manualSpeedLimitKmh, state = "manual")
         } else limit
         // 0.23: estadisticas de la ruta para el resumen final.
+        if (!guardActive || decision?.accept == true) {
         if (!tripLastLat.isNaN() && raw.accuracyM <= 25f) {
             val dLat = Math.toRadians(update.lat - tripLastLat) * 6371000.0
             val dLon = Math.toRadians(update.lon - tripLastLon) * 6371000.0 *
@@ -787,6 +847,7 @@ class NavigationEngine(
         tripLastLat = update.lat
         tripLastLon = update.lon
         speedKmh?.let { if (it > tripMaxSpeedKmh) tripMaxSpeedKmh = it }
+        }
         TransmissionHub.updateMapCoverage(covered)
         if (!covered && downloadJob?.isActive != true && viewportTopUpJob?.isActive != true) {
             // Mid-ride deviation or destination change left the live viewport outside
@@ -863,6 +924,10 @@ class NavigationEngine(
             return@withContext
         }
         lastMessage = message
+        trace.record("nav_frame",mapOf("epoch" to traceRouteEpoch,"remaining_m" to message.remainingDistanceM,
+            "maneuver" to message.maneuver,"distance_to_maneuver_m" to message.distanceM,"street" to message.street,
+            "speed_kmh" to message.speedKmh,"shown_lat" to message.lat,"shown_lon" to message.lon,
+            "guard_message" to TransmissionHub.progressGuardMessage.value))
         TransmissionHub.updateLiveNav(message)
         if (navClient.sendNavMessage(json)) {
             statsTracker.onNavUpdate(json.toByteArray().size)
