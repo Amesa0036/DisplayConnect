@@ -24,6 +24,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +70,7 @@ fun NavMirror(
     joinOptions: List<TransmissionHub.GpxJoinOption> = emptyList(),
     onSelectJoin: (Int) -> Unit = {}
 ) {
+    val guardMessage by TransmissionHub.progressGuardMessage.collectAsState()
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -75,6 +78,7 @@ fun NavMirror(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        guardMessage?.let { Text(it, color = Warn, style = MaterialTheme.typography.bodySmall) }
         // Velocidad y limite
         Row(
             modifier = Modifier.fillMaxWidth(),
