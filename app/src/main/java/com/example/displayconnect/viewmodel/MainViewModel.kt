@@ -432,6 +432,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsRepository = app.settingsRepository
     private val geocoder = NominatimGeocoder()
     private var searchJob: Job? = null
+    val initialRoute = TransmissionHub.initialRoute
+    fun selectInitialRoute(token: String, segment: Int) =
+        NavigationForegroundService.selectInitialRoute(getApplication(),token,segment)
     val tripProgress = TransmissionHub.tripProgress
     val gpxJoinOptions = TransmissionHub.gpxJoinOptions
     val offlineMap = TransmissionHub.offlineMap
