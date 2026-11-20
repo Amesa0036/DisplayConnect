@@ -259,7 +259,8 @@ fun HomeScreen(
                     destLabel = uiState.destLabel,
                     onStop = { viewModel.stopNavigation() },
                     joinOptions = gpxJoinOptions,
-                    onSelectJoin = { viewModel.selectGpxJoinCandidate(it) }
+                    onSelectJoin = { viewModel.selectGpxJoinCandidate(it) },
+                    onSelectInitial = { token, segment -> viewModel.selectInitialRoute(token,segment) }
                 )
             } else {
                 // ---------- Buscar destino ----------
