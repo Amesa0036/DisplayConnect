@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.flow
  * la placa no soporta gnss_diag, el flujo termina con error y la navegacion no
  * arranca (la eleccion de fuente es del usuario en ajustes).
  */
-class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
+class HecateGnssSource(private val navClient: BleNavClient, private val trace: NavigationTraceSink = NavigationTraceSink.NONE) : PositionSource {
 
     override fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = flow {
         // El modulo emite a 1 Hz; sondear mas rapido no aporta nada y satura BLE.
@@ -26,6 +26,7 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
         try {
             while (true) {
                 val reply = navClient.gnssRawCommand(if (started) "status" else "start").getOrThrow()
+                trace.record("gnss_reply", mapOf("command" to if(started) "status" else "start", "reply" to reply.toString()))
                 if (!reply.optBoolean("ok", false)) {
                     val error = reply.optString("error", "gnss_diag rechazado")
                     throw IllegalStateException(error)
@@ -41,13 +42,16 @@ class HecateGnssSource(private val navClient: BleNavClient) : PositionSource {
                 }
                 started = true
                 if (reply.optBoolean("valid_fix", false)) {
-                    decodeFix(reply, SystemClock.elapsedRealtime(), System.currentTimeMillis())?.let { emit(it) }
+                    val decoded = decodeFix(reply, SystemClock.elapsedRealtime(), System.currentTimeMillis())
+                    trace.record("gnss_decode", mapOf("accepted" to (decoded != null)))
+                    decoded?.let { emit(it) }
                 }
                 delay(pollMs)
             }
         } finally {
             if (started) kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") }
+                val stop = kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") }
+                trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess))
             }
         }
     }
