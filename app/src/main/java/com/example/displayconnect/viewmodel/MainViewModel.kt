@@ -174,6 +174,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } finally { _shadowBusy.value = false }
         }
     }
+    val navigationTraceStatus = app.navigationTrace.statusFlow
+    val navigationTraceActive = app.navigationTrace.activeFlow
+    private val _navigationTraceMessage = MutableStateFlow("")
+    val navigationTraceMessage = _navigationTraceMessage.asStateFlow()
+    private val _navigationTraceBusy = MutableStateFlow(false)
+    val navigationTraceBusy = _navigationTraceBusy.asStateFlow()
+
+    fun exportNavigationTrace(uri: Uri?) {
+        if (uri == null || _uiState.value.isNavigating || app.navigationTrace.activeFlow.value > 0 || _navigationTraceBusy.value) return
+        _navigationTraceBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val app = getApplication<com.example.displayconnect.DisplayConnectApp>()
+                    val bytes = app.navigationTrace.snapshot()
+                    app.contentResolver.openOutputStream(uri,"wt")?.use { it.write(bytes); it.flush() }
+                        ?: error("No se pudo abrir destino")
+                    val copied = app.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    check(copied != null && copied.contentEquals(bytes)) { "Copia no verificada" }
+                }
+                _navigationTraceMessage.value = "Copia guardada y verificada. Contiene posiciones; no se ha enviado a nadie."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (_: Exception) { _navigationTraceMessage.value = "Copia no confirmada. El registro privado sigue en la app."
+            } finally { _navigationTraceBusy.value = false }
+        }
+    }
+    fun clearNavigationTrace() {
+        if (_uiState.value.isNavigating || app.navigationTrace.activeFlow.value > 0 || _navigationTraceBusy.value) return
+        _navigationTraceBusy.value = true
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { getApplication<com.example.displayconnect.DisplayConnectApp>().navigationTrace.clear() }
+                _navigationTraceMessage.value = "Registro privado borrado. Las copias que hayas exportado no se borran."
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e
+            } catch (_: Exception) { _navigationTraceMessage.value = "No se pudo confirmar el borrado."
+            } finally { _navigationTraceBusy.value = false }
+        }
+    }
+
     fun exportShadow(uri: Uri?) {
         if (uri == null || _shadowBusy.value || _uiState.value.isNavigating) return
         _shadowBusy.value = true
