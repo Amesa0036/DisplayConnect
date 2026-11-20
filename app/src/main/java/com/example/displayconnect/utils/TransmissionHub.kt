@@ -33,6 +33,11 @@ object TransmissionHub {
     private val _progressGuardMessage = MutableStateFlow<String?>(null)
     val progressGuardMessage = _progressGuardMessage.asStateFlow()
     fun updateProgressGuard(message: String?) { _progressGuardMessage.value = message }
+    data class InitialRouteChoice(val segment: Int, val remainingM: Int, val lateralM: Int, val label: String = "Tramo")
+    data class InitialRouteUi(val token: String, val choices: List<InitialRouteChoice>, val fresh: Boolean)
+    private val _initialRoute = MutableStateFlow<InitialRouteUi?>(null)
+    val initialRoute = _initialRoute.asStateFlow()
+    fun updateInitialRoute(value: InitialRouteUi?) { _initialRoute.value=value }
     private val _tripProgress = MutableStateFlow(TripProgress())
     val tripProgress: StateFlow<TripProgress> = _tripProgress.asStateFlow()
 
@@ -76,6 +81,7 @@ object TransmissionHub {
         _gps.value = com.example.displayconnect.navigation.GpsStatus()
         _tripProgress.value = TripProgress()
         _progressGuardMessage.value = null
+        _initialRoute.value = null
         _liveNav.value = null
         _gpxJoinOptions.value = emptyList()
         _isNavigating.value = active
