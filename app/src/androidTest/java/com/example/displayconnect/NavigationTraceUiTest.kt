@@ -65,13 +65,27 @@ class NavigationTraceUiTest {
             compose.onNodeWithText("Tramo: ~450 m por recorrer").assertIsDisplayed().performClick()
             assertEquals(0,choices)
             compose.onNodeWithText("¿Reconoces este tramo?").assertIsDisplayed()
+            capture("navigation-initial-confirm-dialog.png")
             compose.onNodeWithText("Confirmar").performClick()
             assertEquals(1,choices)
             capture("navigation-initial-unconfirmed.png")
+            compose.onNodeWithText("Ya estoy en el destino").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
+            capture("navigation-initial-destination-choice.png")
+            compose.onNodeWithText("Ya estoy en el destino").performClick()
+            compose.onNodeWithText("¿Ya estás en el destino?").assertIsDisplayed()
+            capture("navigation-initial-destination-dialog.png")
+            compose.onNodeWithText("Cancelar").performClick()
+            assertEquals(1,choices)
+            compose.onNodeWithText("Tramo: ~450 m por recorrer").performScrollTo()
             compose.runOnIdle { TransmissionHub.updateInitialRoute(TransmissionHub.initialRoute.value!!.copy(fresh=false)) }
             compose.onNodeWithText("Tramo: ~450 m por recorrer").assertIsNotEnabled()
+            compose.onNodeWithText("Sin posición GPS fresca").assertIsDisplayed()
             compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
             capture("navigation-initial-no-fix.png")
+            compose.onNodeWithText("Ya estoy en el destino").performScrollTo().assertIsNotEnabled()
+            compose.onNodeWithText("Mantén pulsado para parar").assertIsDisplayed()
+            capture("navigation-initial-no-fix-destination.png")
         } finally { TransmissionHub.setNavigating(false) }
     }
     @Test fun privateTraceStaysInNoBackupAndExportsOnlyOnRequest() {
@@ -86,9 +100,14 @@ class NavigationTraceUiTest {
     }
     private fun capture(name:String) {
         compose.waitForIdle()
+        // Allow the device compositor to present two settled frames after state/scroll changes.
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+        compose.waitForIdle()
+        android.os.SystemClock.sleep(250)
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val file=File(context.getExternalFilesDir(null),name)
-        file.outputStream().use { compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it) }
+        file.outputStream().use { InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it) }
         val descriptor=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cp ${file.absolutePath} /data/local/tmp/$name")
         android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use{it.readBytes()}
     }
