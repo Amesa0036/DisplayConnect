@@ -146,7 +146,7 @@ class NavigationEngine(
                     navClient.sendNavMessage(NavMessage.loading())
                 }
                 withPositionSession(locationTracker, intervalMs) { positions ->
-                    val originUpdate = withTimeout(45_000) { positions.first { acceptUpdate(it) } }
+                    val originUpdate = awaitFirstPosition(positions, boardGnss) { acceptUpdate(it) }
                     val origin = LatLon(originUpdate.lat, originUpdate.lon)
                     val dest = destination ?: return@withPositionSession
                     // Reopening the same trip near its route works without another routing request.
