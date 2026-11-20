@@ -26,7 +26,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -132,6 +132,7 @@ class NavigationEngine(
         gpxInitialJoinPending = prepared != null
         TransmissionHub.setNavigating(true)
         locationJob = scope.launch {
+            var stage = NavigationStage.POSITION
             try {
                 val settings = settingsProvider()
                 activeSettings = settings
@@ -144,55 +145,57 @@ class NavigationEngine(
                 if (navClient.connectionState.value == com.example.displayconnect.models.ConnectionState.CONNECTED) {
                     navClient.sendNavMessage(NavMessage.loading())
                 }
-                val originUpdate = withTimeout(45_000) { locationTracker.locationFlow(intervalMs).first { acceptUpdate(it) } }
-                val origin = LatLon(originUpdate.lat, originUpdate.lon)
-                val dest = destination ?: return@launch
-                // Reopening the same trip near its route works without another routing request.
-                val selected = if (prepared != null && prepared.coordinates.size >= 2) {
-                    prepared
-                } else {
-                    val saved = offlineMap.findRoute(origin, dest, settings.routeProfile)
-                    saved ?: routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
-                        error("Não foi possível calcular a rota. Confira a internet e o destino.")
-                    }
-                }
-                offlineMap.saveRoute(selected, dest, settings.routeProfile)
-                route = selected
-                progressCalculator = RouteProgressCalculator(selected)
-                retryOfflineDownload()
-                gpsWatchdog = scope.launch {
-                    while (true) {
-                        delay(1500)
-                        if (SystemClock.elapsedRealtime() - lastAcceptedMs > 5000) {
-                            TransmissionHub.updateGps(TransmissionHub.gps.value.copy(weak = true, hecate = boardGnss))
-                            sendWeakGpsFrame()
+                withPositionSession(locationTracker, intervalMs) { positions ->
+                    val originUpdate = withTimeout(45_000) { positions.first { acceptUpdate(it) } }
+                    val origin = LatLon(originUpdate.lat, originUpdate.lon)
+                    val dest = destination ?: return@withPositionSession
+                    // Reopening the same trip near its route works without another routing request.
+                    stage = NavigationStage.ROUTE
+                    val selected = if (prepared != null && prepared.coordinates.size >= 2) {
+                        prepared
+                    } else {
+                        val saved = offlineMap.findRoute(origin, dest, settings.routeProfile)
+                        saved ?: routeProvider.fetchRoute(origin, dest, settings.routeProfile).getOrElse {
+                            error("Não foi possível calcular a rota. Confira a internet e o destino.")
                         }
                     }
-                }
-                if (SystemClock.elapsedRealtime() - originUpdate.elapsedMs < 3000) publishUpdate(originUpdate, settings)
-                locationTracker.locationFlow(intervalMs).conflate().collect {
-                    if (acceptUpdate(it)) publishUpdate(it, settings) else if (TransmissionHub.gps.value.weak) sendWeakGpsFrame()
+                    stage = NavigationStage.CACHE
+                    offlineMap.saveRoute(selected, dest, settings.routeProfile)
+                    route = selected
+                    progressCalculator = RouteProgressCalculator(selected)
+                    retryOfflineDownload()
+                    gpsWatchdog = scope.launch {
+                        while (true) {
+                            delay(1500)
+                            if (SystemClock.elapsedRealtime() - lastAcceptedMs > 5000) {
+                                TransmissionHub.updateGps(TransmissionHub.gps.value.copy(weak = true, hecate = boardGnss))
+                                sendWeakGpsFrame()
+                            }
+                        }
+                    }
+                    if (SystemClock.elapsedRealtime() - originUpdate.elapsedMs < 3000) publishUpdate(originUpdate, settings)
+                    stage = NavigationStage.STREAM
+                    positions.collect {
+                        if (acceptUpdate(it)) publishUpdate(it, settings) else if (TransmissionHub.gps.value.weak) sendWeakGpsFrame()
+                    }
+                    error("position_stream_ended")
                 }
             } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
                 downloadJob?.cancel()
                 gpsWatchdog?.cancel()
                 TransmissionHub.setNavigating(false)
-                TransmissionHub.navigationFailed(when (AppLanguage.language.value) {
-                    "en" -> "No GPS fix. Move to an open area and try again."
-                    "es" -> "Sin posición GPS. Ve a una zona abierta y vuelve a intentarlo."
-                    else -> "GPS sem posição. Vá para um local aberto e tente novamente."
-                })
+                val failure = navigationFailure(stage, e)
+                Log.w("DisplayConnectNav", "navigation_timeout code=${failure.name} stage=${stage.name}")
+                TransmissionHub.navigationFailed(navigationFailureMessage(failure, AppLanguage.language.value))
                 onNavigationEnded()
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
                 downloadJob?.cancel()
                 gpsWatchdog?.cancel()
                 TransmissionHub.setNavigating(false)
-                TransmissionHub.navigationFailed(when (AppLanguage.language.value) {
-                    "en" -> "Unable to start navigation. Check precise location, internet and the destination."
-                    "es" -> "No se puede iniciar la navegación. Comprueba la ubicación precisa, internet y el destino."
-                    else -> e.message ?: "Não foi possível iniciar a navegação."
-                })
+                val failure = navigationFailure(stage, e)
+                Log.w("DisplayConnectNav", "navigation_failed code=${failure.name} stage=${stage.name}")
+                TransmissionHub.navigationFailed(navigationFailureMessage(failure, AppLanguage.language.value))
                 onNavigationEnded()
             }
         }
