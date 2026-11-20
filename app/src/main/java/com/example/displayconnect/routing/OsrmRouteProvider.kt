@@ -104,8 +104,18 @@ class OsrmRouteProvider(
             }
         }
 
+        val waypoints=root.optJSONArray("waypoints")
+        val snapped=mutableListOf<LatLon>(); val offsets=mutableListOf<Double>()
+        if(waypoints!=null) for(i in 0 until waypoints.length()) {
+            val w=waypoints.optJSONObject(i) ?: continue
+            val location=w.optJSONArray("location") ?: continue
+            val lat=location.optDouble(1,Double.NaN);val lon=location.optDouble(0,Double.NaN)
+            if(lat.isFinite() && lon.isFinite()) {
+                snapped.add(LatLon(lat,lon));offsets.add(w.optDouble("distance",Double.NaN))
+            }
+        }
         return RouteData(points, steps, route.getDouble("distance"), route.getDouble("duration"),
-            segmentDistances, segmentDurations)
+            segmentDistances, segmentDurations, snapped, offsets)
     }
 
     private fun formatInstruction(type: String, modifier: String): String = when {
