@@ -55,6 +55,22 @@ fun SettingsScreen(
     mainViewModel: MainViewModel = viewModel()
 ) {
     val mainUiState by mainViewModel.uiState.collectAsState()
+    val traceActive by mainViewModel.navigationTraceActive.collectAsState()
+    val traceStatus by mainViewModel.navigationTraceStatus.collectAsState()
+    val traceMessage by mainViewModel.navigationTraceMessage.collectAsState()
+    val traceBusy by mainViewModel.navigationTraceBusy.collectAsState()
+    val traceExport = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson")) {
+        mainViewModel.exportNavigationTrace(it)
+    }
+    var confirmTraceDelete by remember { mutableStateOf(false) }
+    if (confirmTraceDelete) AlertDialog(
+        onDismissRequest = { confirmTraceDelete = false },
+        title = { Text("Borrar registro privado") },
+        text = { Text("Se borra el registro de navegacion de esta app, no las copias exportadas.") },
+        confirmButton = { TextButton(onClick = { confirmTraceDelete = false; mainViewModel.clearNavigationTrace() }) { Text("Borrar") } },
+        dismissButton = { TextButton(onClick = { confirmTraceDelete = false }) { Text("Cancelar") } }
+    )
+
     val boardInfo by mainViewModel.boardInfo.collectAsState()
     val otaBusy by mainViewModel.otaBusy.collectAsState()
     val otaProgress by mainViewModel.otaProgress.collectAsState()
@@ -211,6 +227,18 @@ fun SettingsScreen(
 
             }
             if (section == "advanced") {
+            SectionCard(title = "Registro privado de navegacion") {
+                Text("Con GPS de Hecate guarda posiciones originales, ruta, decisiones de avance y recalculos en este movil. Sin envio automatico ni copia de seguridad. Conserva hasta tres archivos de unos 2 MB; lo mas antiguo se reemplaza.", style = MaterialTheme.typography.bodySmall)
+                Text("La copia contiene ubicaciones. Elige donde guardarla y con quien compartirla; guardar no la envia.", style = MaterialTheme.typography.bodySmall)
+                Text(traceStatus, style = MaterialTheme.typography.bodySmall)
+                if (traceMessage.isNotBlank()) Text(traceMessage, style = MaterialTheme.typography.bodySmall)
+                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !traceBusy,
+                    onClick = { traceExport.launch("registro-navegacion.jsonl") }) { Text("Guardar copia del registro") }
+                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !traceBusy,
+                    onClick = { confirmTraceDelete = true }) { Text("Borrar registro privado") }
+                if (mainUiState.isNavigating || traceActive > 0) Text("Finaliza la navegacion y espera al cierre del GPS antes de guardar o borrar.")
+            }
+
             SectionCard(title = "Diagnostico sombra (preparacion)") {
                 val ready = mainUiState.connectionState == ConnectionState.CONNECTED && !otaBusy && !imuBusy && !shadowBusy && !mainViewModel.boardBusy.collectAsState().value
                 Text("Solo registra posibles decisiones y motivos. Nunca apaga ni enciende la pantalla. Desactivado hasta iniciar. Hasta 3 minutos; RAM se pierde al apagar.")
