@@ -20,5 +20,8 @@ class GnssBenchUiTest {
   File(context.getExternalFilesDir(null), "gnss-ble-bench.png").outputStream().use {
    compose.onRoot().captureToImage().asAndroidBitmap().compress(Bitmap.CompressFormat.PNG,100,it)
   }
+  val source = File(context.getExternalFilesDir(null), "gnss-ble-bench.png").absolutePath
+  val fd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cp $source /data/local/tmp/gnss-ble-bench.png")
+  android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
  }
 }
