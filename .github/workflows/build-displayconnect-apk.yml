@@ -79,7 +79,7 @@ jobs:
           emulator-boot-timeout: 600
           script: |
             mkdir -p ui-evidence
-            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
+            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
 
       - name: Retain UI evidence
         if: always()
