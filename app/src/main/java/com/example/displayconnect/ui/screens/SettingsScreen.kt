@@ -55,6 +55,7 @@ fun SettingsScreen(
     mainViewModel: MainViewModel = viewModel()
 ) {
     val mainUiState by mainViewModel.uiState.collectAsState()
+    val effectiveGpsSource by com.example.displayconnect.utils.TransmissionHub.effectiveGpsSource.collectAsState()
     val traceActive by mainViewModel.navigationTraceActive.collectAsState()
     val rawNotice by mainViewModel.rawCaptureNotice.collectAsState()
     val traceStatus by mainViewModel.navigationTraceStatus.collectAsState()
@@ -141,6 +142,12 @@ fun SettingsScreen(
             }
 
             SectionCard(title = stringResource(R.string.setting_gps_source)) {
+                Text("Eleccion para la siguiente sesion. Al cambiar durante una ruta por destino, primero se para y se espera al cierre del GPS y su copia.",style=MaterialTheme.typography.bodySmall)
+                val effective=effectiveGpsSource
+                Text(if(mainUiState.isNavigating && effective!=null)
+                    "Fuente en uso: "+if(effective==com.example.displayconnect.models.GpsSource.HECATE) "GPS de Hecate" else "GPS del movil"
+                    else "GPS de navegacion parado.",style=MaterialTheme.typography.bodySmall)
+                com.example.displayconnect.ui.components.RawCaptureStatus(rawNotice)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChip(
                         selected = settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE,
