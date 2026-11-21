@@ -36,7 +36,7 @@ class NavigationForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val traceOwner = (application as DisplayConnectApp).navigationTrace
         if(intent?.action in listOf(ACTION_START,ACTION_START_ROUTE) &&
-            (traceOwner.activeFlow.value>0 || traceOwner.rawNotice.value.copying)) {
+            (sourceSwitching || traceOwner.activeFlow.value>0 || traceOwner.rawNotice.value.copying)) {
             com.example.displayconnect.utils.TransmissionHub.navigationFailed("Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.")
             return START_NOT_STICKY
         }
@@ -60,6 +60,12 @@ class NavigationForegroundService : Service() {
     }
 
     private fun handleStart(intent: Intent) {
+        serviceScope.launch { handleStartAndAwait(intent) }
+    }
+
+    /** Also used directly by source handoff so cancellation covers preflight and
+     * engine creation, not only the previous owner's closure. */
+    private suspend fun handleStartAndAwait(intent: Intent) {
         val currentTrace = (application as DisplayConnectApp).navigationTrace
         if(currentTrace.activeFlow.value>0 || currentTrace.rawNotice.value.copying) {
             com.example.displayconnect.utils.TransmissionHub.navigationFailed("Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.")
@@ -78,9 +84,9 @@ class NavigationForegroundService : Service() {
 
         val app = application as DisplayConnectApp
         navigationEngine?.stopNavigation()
-        serviceScope.launch {
+        run {
             val trace = app.navigationTrace.newSession()
-            val source = selectPositionSource(app, trace) ?: return@launch
+            val source = selectPositionSource(app, trace) ?: return
             val engine = NavigationEngine(
                 scope = serviceScope,
                 locationTracker = source,
@@ -97,6 +103,7 @@ class NavigationForegroundService : Service() {
             activeGpsSource = if (source is HecateGnssSource) com.example.displayconnect.models.GpsSource.HECATE
                 else com.example.displayconnect.models.GpsSource.PHONE
             engine.startNavigation(destLat, destLon)
+            com.example.displayconnect.utils.TransmissionHub.updateEffectiveGpsSource(activeGpsSource)
             watchGpsSourceSwitch(app, intent)
         }
     }
@@ -135,6 +142,7 @@ class NavigationForegroundService : Service() {
             activeGpsSource = if (source is HecateGnssSource) com.example.displayconnect.models.GpsSource.HECATE
                 else com.example.displayconnect.models.GpsSource.PHONE
             engine.startNavigationWithRoute(prepared, last.lat, last.lon)
+            com.example.displayconnect.utils.TransmissionHub.updateEffectiveGpsSource(activeGpsSource)
             // Con ruta GPX el cambio de fuente se aplica al volver a iniciar la
             // navegacion (rehacer la traza en curso seria destructivo).
         }
@@ -143,13 +151,18 @@ class NavigationForegroundService : Service() {
     /** Elige la fuente de posicion segun ajustes. Con HECATE no hay repliegue
      *  silencioso: si la placa no ofrece gnss_diag se avisa y no se navega. */
     private suspend fun selectPositionSource(app: DisplayConnectApp, trace: NavigationTraceSink): PositionSource? {
-        val settings = app.settingsRepository.settings.first()
-        if (settings.gpsSource == com.example.displayconnect.models.GpsSource.PHONE) return LocationTracker(this)
-        if (app.navClient.boardInfo.value == null) app.navClient.boardCommand("board_info")
-        val reply = app.navClient.gnssRawCommand("status").getOrNull()
-        if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
-            return HecateGnssSource(app.navClient, trace)
-        }
+        val (_,source)=latestPreparedSource(
+            latestSelection={ app.settingsRepository.settings.first().gpsSource },
+            prepare={ choice ->
+                if(choice==com.example.displayconnect.models.GpsSource.PHONE) LocationTracker(this) as PositionSource?
+                else {
+                    if(app.navClient.boardInfo.value==null) app.navClient.boardCommand("board_info")
+                    val reply=app.navClient.gnssRawCommand("status").getOrNull()
+                    if(reply!=null && reply.optBoolean("ok",false) && reply.optBoolean("supported",false) && reply.optBoolean("reader",false)) HecateGnssSource(app.navClient,trace)
+                    else null
+                }
+            })
+        if(source!=null) return source
         com.example.displayconnect.utils.TransmissionHub.navigationFailed(
             when (com.example.displayconnect.utils.AppLanguage.language.value) {
                 "en" -> "This board does not offer its own GPS. Select phone GPS or update the board firmware."
@@ -161,18 +174,35 @@ class NavigationForegroundService : Service() {
     }
 
     private var activeGpsSource: com.example.displayconnect.models.GpsSource = com.example.displayconnect.models.GpsSource.PHONE
+    private var sourceSwitching=false
     private var sourceWatchJob: kotlinx.coroutines.Job? = null
 
     /** Cambio manual de fuente en ajustes durante la navegacion: reinicio
      *  explicito con la fuente elegida (lo pidio el usuario; no es un fallback
-     *  silencioso). Solo rutas por destino; las GPX no se rehacen solas. */
+     *  silencioso). Espera STOP, copia y cierre, y entonces lee la ultima eleccion.
+     *  Solo rutas por destino; las GPX no se rehacen solas. */
     private fun watchGpsSourceSwitch(app: DisplayConnectApp, intent: Intent) {
         sourceWatchJob?.cancel()
         sourceWatchJob = serviceScope.launch {
             app.settingsRepository.settings.collect { s ->
                 if (s.gpsSource != activeGpsSource && navigationEngine != null) {
-                    sourceWatchJob?.cancel()
-                    handleStart(intent)
+                    val previous=navigationEngine ?: return@collect
+                    sourceSwitching=true
+                    // Stop the effective source before suspending. UI no longer claims a
+                    // route is running while the new choice waits for old receiver closure.
+                    navigationEngine=null
+                    try {
+                        val restarted=sourceHandoff(
+                            close={ previous.stopNavigationAndAwaitClosure() },
+                            latestSelection={ app.settingsRepository.settings.first().gpsSource },
+                            restart={ _ -> handleStartAndAwait(intent) }
+                        )
+                        if(!restarted) {
+                            com.example.displayconnect.utils.TransmissionHub.navigationFailed(
+                                "Navegacion parada. No se reinicio con otra fuente: no se pudo confirmar STOP o completar la copia del GPS. Revisa la placa y el registro antes de volver a empezar.")
+                            stopNavigationService()
+                        }
+                    } finally { sourceSwitching=false }
                 }
             }
         }
@@ -180,6 +210,7 @@ class NavigationForegroundService : Service() {
 
     private fun stopNavigationService() {
         sourceWatchJob?.cancel()
+        sourceSwitching=false
         navigationEngine?.stopNavigation()
         navigationEngine = null
         NavigationWakeLock.release()
