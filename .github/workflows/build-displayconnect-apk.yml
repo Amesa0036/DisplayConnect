@@ -79,7 +79,7 @@ jobs:
           emulator-boot-timeout: 600
           script: |
             mkdir -p ui-evidence
-            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
+            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; for f in raw-capturing raw-copying raw-received raw-partial raw-failed raw-no-memory raw-second-session raw-legacy raw-settings-copying raw-settings-partial; do adb pull /data/local/tmp/$f.png ui-evidence/ || true; done; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
 
             # Required navigation evidence, fail rather than silently omit it.
             adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/
@@ -91,13 +91,31 @@ jobs:
             adb pull /data/local/tmp/navigation-initial-destination-dialog.png ui-evidence/
             adb pull /data/local/tmp/navigation-initial-no-fix-destination.png ui-evidence/
 
+            # Raw diagnostic notices are required, including actual Settings controls.
+            for state in capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial; do
+              adb pull "/data/local/tmp/raw-$state.png" ui-evidence/
+              test -s "ui-evidence/raw-$state.png"
+            done
+            cp -r app/build/reports/androidTests ui-evidence/android-test-reports
+            cp -r app/build/outputs/androidTest-results ui-evidence/android-test-results
+            python3 - <<'PYIMAGES'
+            from pathlib import Path
+            import struct
+            for p in Path('ui-evidence').glob('raw-*.png'):
+                data=p.read_bytes()
+                assert data[:8]==b'\x89PNG\r\n\x1a\n', p
+                w,h=struct.unpack('>II',data[16:24])
+                assert w>=300 and h>=500,(p,w,h)
+                print(p,w,h)
+            PYIMAGES
+
       - name: Retain UI evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ui-evidence
           path: ui-evidence/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
 
       - name: Sign final APK explicitly and enforce certificate match
