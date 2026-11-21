@@ -166,10 +166,11 @@ class BleNavClient(context: Context) {
         }
 
     /** Explicit, bounded GNSS diagnostic query. Never enters the NAV channel. */
-    suspend fun gnssRawCommand(op: String): Result<JSONObject> = boardMutex.withLock {
+    suspend fun gnssRawCommand(op: String, captureId: String? = null, offset: Int? = null): Result<JSONObject> = boardMutex.withLock {
         _boardBusy.value = true
         try {
-            check(op in listOf("start", "status", "stop"))
+            check(op in listOf("start", "status", "stop", "raw_meta", "raw_chunk"))
+            check(if(op=="raw_chunk") captureId?.matches(Regex("[a-f0-9]{16,32}"))==true && offset in 0..131072 else captureId==null && offset==null)
             check(!otaActive.get() && !shadowProtected.get()) { "Termina o guarda primero las capturas" }
             val connection = gatt ?: error("La placa no está conectada")
             val characteristic = rxCharacteristic ?: error("La placa no está lista")
@@ -180,6 +181,7 @@ class BleNavClient(context: Context) {
             val reply = CompletableDeferred<JSONObject>()
             synchronized(this) { gnssReplyId = id; gnssReply = reply }
             val request = JSONObject().put("type", "gnss_diag").put("request_id", id).put("board_id", board.id).put("op", op)
+            if(op=="raw_chunk")request.put("capture_id",captureId).put("offset",offset)
             val written = writeMutex.withLock {
                 check(connection === gatt && address == targetAddress) { "La conexión ha cambiado" }
                 writeInChunks(connection, characteristic, ("\n" + request + "\n").toByteArray(Charsets.UTF_8))
