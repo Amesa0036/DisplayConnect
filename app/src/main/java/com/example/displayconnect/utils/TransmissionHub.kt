@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 object TransmissionHub {
+    private val _effectiveGpsSource=MutableStateFlow<com.example.displayconnect.models.GpsSource?>(null)
+    val effectiveGpsSource=_effectiveGpsSource.asStateFlow()
+    fun updateEffectiveGpsSource(source:com.example.displayconnect.models.GpsSource) { _effectiveGpsSource.value=source }
+
 
     data class TripSummary(
         val distanceM: Int,
@@ -86,6 +90,7 @@ object TransmissionHub {
         _gpxJoinOptions.value = emptyList()
         _isNavigating.value = active
         if (!active) {
+            _effectiveGpsSource.value=null
             _stats.value = TransmissionStats()
         }
     }
