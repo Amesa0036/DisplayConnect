@@ -57,6 +57,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var gnssBenchJob: kotlinx.coroutines.Job? = null
     fun cancelGnssBench() { gnssBenchJob?.cancel() }
     fun gnssCommand(op: String) {
+        if(op=="start" && !navigationReadyToStart()) return
         if (op == "stop" && gnssBenchJob?.isActive == true) {
             gnssBenchJob?.cancel()
             return
@@ -176,6 +177,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     val navigationTraceStatus = app.navigationTrace.statusFlow
     val navigationTraceActive = app.navigationTrace.activeFlow
+    val rawCaptureNotice = app.navigationTrace.rawNotice
+    private fun navigationReadyToStart(): Boolean {
+        if(app.navigationTrace.activeFlow.value==0 && !app.navigationTrace.rawNotice.value.copying) return true
+        _uiState.update { it.copy(errorMessage="Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.") }
+        return false
+    }
     private val _navigationTraceMessage = MutableStateFlow("")
     val navigationTraceMessage = _navigationTraceMessage.asStateFlow()
     private val _navigationTraceBusy = MutableStateFlow(false)
@@ -731,6 +738,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onLocationPermissionGranted() {
+        if(!navigationReadyToStart()) return
         if (pendingGpxStart) {
             pendingGpxStart = false
             startGpxNavigation { }
@@ -751,6 +759,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun ensureConnectedAndDestination(): Boolean {
+        if(!navigationReadyToStart()) return false
         val state = _uiState.value
         if (state.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
             _uiState.update { it.copy(errorMessage = com.example.displayconnect.utils.AppLanguage.context(getApplication()).getString(R.string.error_not_connected)) }
@@ -876,6 +885,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startGpxNavigation(onNeedLocationPermission: () -> Unit) {
+        if(!navigationReadyToStart()) return
         val route = gpxRoute ?: return
         if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
             _uiState.update {
