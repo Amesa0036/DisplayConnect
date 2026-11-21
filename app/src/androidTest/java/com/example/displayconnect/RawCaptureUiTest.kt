@@ -1,6 +1,7 @@
 package com.example.displayconnect
 
 import android.graphics.Bitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -71,13 +72,71 @@ class RawCaptureUiTest {
    capture("raw-settings-partial.png")
   } finally {sink.record("gnss_raw_complete",mapOf("capture_complete" to true))}
  }
+ @Test fun actualHomeCopyingNotice() {
+  val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as DisplayConnectApp
+  val sink=app.navigationTrace.newSession()
+  sink.record("gnss_raw_transfer_start",emptyMap())
+  try {
+   compose.setContent { DisplayConnectTheme {
+    com.example.displayconnect.ui.screens.HomeScreen(onNavigateToSettings={},onOpenClassic={},onRequestLocationPermission={},onRequestBluetoothPermission={})
+   } }
+   compose.onNodeWithText("GPS parado.",substring=true).assertIsDisplayed()
+   capture("raw-home-copying.png")
+  } finally {sink.record("gnss_raw_complete",mapOf("capture_complete" to true))}
+ }
+ @Test fun actualRouteCopyingNotice() {
+  val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as DisplayConnectApp
+  val sink=app.navigationTrace.newSession()
+  sink.record("gnss_raw_transfer_start",emptyMap())
+  try {
+   compose.setContent { DisplayConnectTheme {
+    com.example.displayconnect.ui.screens.MainScreen(onNavigateToSettings={},onRequestLocationPermission={},onRequestBluetoothPermission={},onNavigateBack={},section="routes")
+   } }
+   compose.onNodeWithText("GPS parado.",substring=true).performScrollTo().assertIsDisplayed()
+   capture("raw-route-copying.png")
+  } finally {sink.record("gnss_raw_complete",mapOf("capture_complete" to true))}
+ }
+ @Test fun selectedSourceIsNotMislabelledAsEffectiveWhileClosing() {
+  val app=InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as DisplayConnectApp
+  val sink=app.navigationTrace.newSession()
+  com.example.displayconnect.utils.TransmissionHub.setNavigating(true)
+  com.example.displayconnect.utils.TransmissionHub.updateEffectiveGpsSource(com.example.displayconnect.models.GpsSource.HECATE)
+  try {
+   compose.setContent { DisplayConnectTheme {com.example.displayconnect.ui.screens.SettingsScreen(onNavigateBack={})} }
+   compose.onNodeWithText("Fuente en uso: GPS de Hecate").performScrollTo().assertIsDisplayed()
+   capture("raw-source-active.png")
+   compose.runOnIdle {
+    com.example.displayconnect.utils.TransmissionHub.setNavigating(false)
+    sink.record("gnss_raw_transfer_start",emptyMap())
+   }
+   compose.onNodeWithText("GPS de navegacion parado.").performScrollTo().assertIsDisplayed()
+   compose.onNodeWithText("GPS parado.",substring=true).assertIsDisplayed()
+   capture("raw-source-copying.png")
+  } finally {
+   com.example.displayconnect.utils.TransmissionHub.setNavigating(false)
+   sink.record("gnss_raw_complete",mapOf("capture_complete" to true))
+  }
+ }
  private fun capture(name:String) {
   compose.waitForIdle();compose.mainClock.advanceTimeByFrame();compose.mainClock.advanceTimeByFrame();compose.waitForIdle()
   android.os.SystemClock.sleep(250)
   val i=InstrumentationRegistry.getInstrumentation();val c=i.targetContext
   val f=File(c.getExternalFilesDir(null),name)
-  f.outputStream().use{i.uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it)}
+  val image=compose.onRoot().captureToImage().asAndroidBitmap()
+  assertNonBlank(image,name)
+  f.outputStream().use{check(image.compress(Bitmap.CompressFormat.PNG,100,it))}
   val d=i.uiAutomation.executeShellCommand("cp ${f.absolutePath} /data/local/tmp/$name")
   android.os.ParcelFileDescriptor.AutoCloseInputStream(d).use{it.readBytes()}
  }
+ private fun assertNonBlank(image:Bitmap,name:String) {
+  val pixels=image.copy(Bitmap.Config.ARGB_8888,false)
+  val colors=mutableMapOf<Int,Int>()
+  for(y in 0 until 64) for(x in 0 until 64) {
+   val rgb=pixels.getPixel(x*(pixels.width-1)/63,y*(pixels.height-1)/63) and 0x00f0f0f0
+   colors[rgb]=(colors[rgb]?:0)+1
+  }
+  pixels.recycle()
+  assertTrue("Blank or nearly flat screenshot: $name",(colors.values.maxOrNull()?:4096)<4000)
+ }
+
 }
