@@ -107,8 +107,22 @@ class NavigationTraceUiTest {
         android.os.SystemClock.sleep(250)
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         val file=File(context.getExternalFilesDir(null),name)
-        file.outputStream().use { InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot().compress(Bitmap.CompressFormat.PNG,100,it) }
+        val image=if(name.contains("dialog")) InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            else compose.onRoot().captureToImage().asAndroidBitmap()
+        assertNonBlank(image,name)
+        file.outputStream().use { check(image.compress(Bitmap.CompressFormat.PNG,100,it)) }
         val descriptor=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cp ${file.absolutePath} /data/local/tmp/$name")
         android.os.ParcelFileDescriptor.AutoCloseInputStream(descriptor).use{it.readBytes()}
     }
+ private fun assertNonBlank(image:Bitmap,name:String) {
+  val pixels=image.copy(Bitmap.Config.ARGB_8888,false)
+  val colors=mutableMapOf<Int,Int>()
+  for(y in 0 until 64) for(x in 0 until 64) {
+   val rgb=pixels.getPixel(x*(pixels.width-1)/63,y*(pixels.height-1)/63) and 0x00f0f0f0
+   colors[rgb]=(colors[rgb]?:0)+1
+  }
+  pixels.recycle()
+  assertTrue("Blank or nearly flat screenshot: $name",(colors.values.maxOrNull()?:4096)<4000)
+ }
+
 }
