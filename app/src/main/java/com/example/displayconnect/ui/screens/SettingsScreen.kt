@@ -56,6 +56,7 @@ fun SettingsScreen(
 ) {
     val mainUiState by mainViewModel.uiState.collectAsState()
     val traceActive by mainViewModel.navigationTraceActive.collectAsState()
+    val rawNotice by mainViewModel.rawCaptureNotice.collectAsState()
     val traceStatus by mainViewModel.navigationTraceStatus.collectAsState()
     val traceMessage by mainViewModel.navigationTraceMessage.collectAsState()
     val traceBusy by mainViewModel.navigationTraceBusy.collectAsState()
@@ -230,11 +231,13 @@ fun SettingsScreen(
             SectionCard(title = "Registro privado de navegacion") {
                 Text("Con GPS de Hecate guarda posiciones originales, ruta, decisiones de avance y recalculos en este movil. Sin envio automatico ni copia de seguridad. Conserva hasta tres archivos de unos 2 MB; lo mas antiguo se reemplaza.", style = MaterialTheme.typography.bodySmall)
                 Text("La copia contiene ubicaciones. Elige donde guardarla y con quien compartirla; guardar no la envia.", style = MaterialTheme.typography.bodySmall)
+                Text(com.example.displayconnect.navigation.RawCapturePresentation.EXPLANATION, style = MaterialTheme.typography.bodySmall)
+                com.example.displayconnect.ui.components.RawCaptureStatus(rawNotice)
                 Text(traceStatus, style = MaterialTheme.typography.bodySmall)
                 if (traceMessage.isNotBlank()) Text(traceMessage, style = MaterialTheme.typography.bodySmall)
-                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !traceBusy,
+                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !rawNotice.copying && !traceBusy,
                     onClick = { traceExport.launch("registro-navegacion.jsonl") }) { Text("Guardar copia del registro") }
-                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !traceBusy,
+                Button(enabled = !mainUiState.isNavigating && traceActive == 0 && !rawNotice.copying && !traceBusy,
                     onClick = { confirmTraceDelete = true }) { Text("Borrar registro privado") }
                 if (mainUiState.isNavigating || traceActive > 0) Text("Finaliza la navegacion y espera al cierre del GPS antes de guardar o borrar.")
             }
