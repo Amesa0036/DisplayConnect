@@ -34,6 +34,12 @@ class NavigationForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val traceOwner = (application as DisplayConnectApp).navigationTrace
+        if(intent?.action in listOf(ACTION_START,ACTION_START_ROUTE) &&
+            (traceOwner.activeFlow.value>0 || traceOwner.rawNotice.value.copying)) {
+            com.example.displayconnect.utils.TransmissionHub.navigationFailed("Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.")
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_START -> handleStart(intent)
             ACTION_START_ROUTE -> handleStartRoute()
@@ -54,6 +60,11 @@ class NavigationForegroundService : Service() {
     }
 
     private fun handleStart(intent: Intent) {
+        val currentTrace = (application as DisplayConnectApp).navigationTrace
+        if(currentTrace.activeFlow.value>0 || currentTrace.rawNotice.value.copying) {
+            com.example.displayconnect.utils.TransmissionHub.navigationFailed("Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.")
+            return
+        }
         val destLat = intent.getDoubleExtra(EXTRA_DEST_LAT, Double.NaN)
         val destLon = intent.getDoubleExtra(EXTRA_DEST_LON, Double.NaN)
         if (destLat.isNaN() || destLon.isNaN()) {
