@@ -95,6 +95,8 @@ fun MainScreen(
         }
     }
     val snackbarHostState = remember { SnackbarHostState() }
+    val traceActive by viewModel.navigationTraceActive.collectAsState()
+    val rawNotice by viewModel.rawCaptureNotice.collectAsState()
     val isConnected = uiState.connectionState == ConnectionState.CONNECTED
     val uriHandler = LocalUriHandler.current
 
@@ -398,7 +400,7 @@ fun MainScreen(
             Button(
                 onClick = { viewModel.startNavigation(onRequestLocationPermission) },
                 modifier = Modifier.fillMaxWidth(),
-                enabled = isConnected && !uiState.isNavigating,
+                enabled = isConnected && !uiState.isNavigating && traceActive==0 && !rawNotice.copying,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.tertiary
                 )
@@ -406,6 +408,7 @@ fun MainScreen(
                 Text(stringResource(R.string.start_navigation))
             }
 
+            com.example.displayconnect.ui.components.RawCaptureStatus(rawNotice)
             if (uiState.isNavigating) {
                 OutlinedButton(
                     onClick = viewModel::stopNavigation,
