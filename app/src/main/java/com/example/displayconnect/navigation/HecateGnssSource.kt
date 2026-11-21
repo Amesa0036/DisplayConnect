@@ -17,11 +17,17 @@ import kotlinx.coroutines.flow.flow
  */
 class HecateGnssSource(private val navClient: BleNavClient, private val trace: NavigationTraceSink = NavigationTraceSink.NONE) : PositionSource {
 
+    /** False after this owner attempts I/O, until explicit STOP and any raw copy finish.
+     * An uncollected source has touched no receiver and is safe to discard. */
+    @Volatile var closureConfirmed: Boolean = true
+        private set
+
     override fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = flow {
         // El modulo emite a 1 Hz; sondear mas rapido no aporta nada y satura BLE.
         // Cross-instance lock includes STOP and raw retrieval. A second start must not
         // open/stop another receiver session while the first is closing.
         check(sessionOwner.tryLock()) { "gnss_session_closing_or_active" }
+        closureConfirmed = false
         val pollMs = intervalMs.coerceIn(1000L, 5000L)
         var started = false
         var rawCaptureId: String? = null
@@ -69,8 +75,10 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
                     kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") } else null
                 if(started || rawCaptureId!=null)
                     trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess))
+                val stopConfirmed=stop?.getOrNull()?.let { it.optBoolean("ok") && !it.optBoolean("running",true) }==true
+                var copyConfirmed=true
                 rawCaptureId?.let { captureId ->
-                    if(stop?.getOrNull()?.let { it.optBoolean("ok") && !it.optBoolean("running",true) }==true) {
+                    if(stopConfirmed) {
                         trace.record("gnss_raw_transfer_start",mapOf("capture_id" to captureId))
                         val completed=kotlinx.coroutines.withTimeoutOrNull(90_000) {
                             try {
@@ -82,9 +90,11 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
                                 false
                             }
                         }
+                        copyConfirmed=completed==true
                         if(completed==null)trace.record("gnss_raw_failure",mapOf("capture_id" to captureId,"error_class" to "transfer_deadline_90s"))
                     }else trace.record("gnss_raw_failure",mapOf("capture_id" to captureId,"error_class" to "stop_not_confirmed_no_download"))
                 }
+                closureConfirmed=stopConfirmed && copyConfirmed
             } } finally { sessionOwner.unlock() }
         }
     }
