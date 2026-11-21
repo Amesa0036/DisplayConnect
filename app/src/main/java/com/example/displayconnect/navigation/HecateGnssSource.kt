@@ -19,13 +19,26 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
 
     override fun locationFlow(intervalMs: Long): Flow<LocationUpdate> = flow {
         // El modulo emite a 1 Hz; sondear mas rapido no aporta nada y satura BLE.
+        // Cross-instance lock includes STOP and raw retrieval. A second start must not
+        // open/stop another receiver session while the first is closing.
+        check(sessionOwner.tryLock()) { "gnss_session_closing_or_active" }
         val pollMs = intervalMs.coerceIn(1000L, 5000L)
         var started = false
+        var rawCaptureId: String? = null
         // One explicit owner start is one hardware session. Never auto-restart
         // after a transport failure, even if navigation is still requested.
         try {
             while (true) {
                 val reply = navClient.gnssRawCommand(if (started) "status" else "start").getOrThrow()
+                if(!started && reply.optInt("raw_diag",0)==1) {
+                    if(reply.optBoolean("raw_available") && reply.optBoolean("raw_capture_current"))
+                        rawCaptureId=reply.optString("raw_capture_id").takeIf { it.matches(Regex("[a-f0-9]{16,32}")) }
+                    trace.record("gnss_raw_capability",mapOf("available" to reply.optBoolean("raw_available"),
+                        "current" to reply.optBoolean("raw_capture_current"),"capture_id" to rawCaptureId,
+                        "note" to "First hardware session per boot only; RAM lost on reboot; no automatic clear"))
+                }
+                if(!started && reply.optInt("raw_diag",0)!=1)
+                    trace.record("gnss_raw_unsupported",emptyMap())
                 trace.record("gnss_reply", mapOf("command" to if(started) "status" else "start", "reply" to reply.toString()))
                 if (!reply.optBoolean("ok", false)) {
                     val error = reply.optString("error", "gnss_diag rechazado")
@@ -49,13 +62,34 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
                 delay(pollMs)
             }
         } finally {
-            if (started) kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
-                val stop = kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") }
-                trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess))
-            }
+            try { kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) {
+                // Original STOP remains first. Export starts only after its explicit success.
+                // Also stop when a diagnostic start returned stopped before `started` was set.
+                val stop = if(started || rawCaptureId!=null)
+                    kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") } else null
+                if(started || rawCaptureId!=null)
+                    trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess))
+                rawCaptureId?.let { captureId ->
+                    if(stop?.getOrNull()?.let { it.optBoolean("ok") && !it.optBoolean("running",true) }==true) {
+                        trace.record("gnss_raw_transfer_start",mapOf("capture_id" to captureId))
+                        val completed=kotlinx.coroutines.withTimeoutOrNull(90_000) {
+                            try {
+                                HecateRawCapture(trace).collect(captureId) { op,id,offset -> navClient.gnssRawCommand(op,id,offset) }
+                                true
+                            } catch(e:kotlinx.coroutines.CancellationException) { throw e
+                            } catch(e:Exception) {
+                                trace.record("gnss_raw_failure",mapOf("capture_id" to captureId,"error_class" to e.javaClass.simpleName))
+                                false
+                            }
+                        }
+                        if(completed==null)trace.record("gnss_raw_failure",mapOf("capture_id" to captureId,"error_class" to "transfer_deadline_90s"))
+                    }else trace.record("gnss_raw_failure",mapOf("capture_id" to captureId,"error_class" to "stop_not_confirmed_no_download"))
+                }
+            } } finally { sessionOwner.unlock() }
         }
     }
     companion object {
+        private val sessionOwner = kotlinx.coroutines.sync.Mutex()
         /** HDOP x 5 m is an estimate, not a measured receiver accuracy.
          * Reject poor HDOP rather than clamping it into the filter's valid range. */
         internal fun decodeFix(reply: org.json.JSONObject, receivedMs: Long, wallMs: Long = System.currentTimeMillis()): LocationUpdate? {
