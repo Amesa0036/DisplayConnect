@@ -20,6 +20,8 @@ class FileNavigationTrace(private val directory: File, private val fileLimit: Lo
     private val fileCount: Int = 3) {
     private val queue = ArrayBlockingQueue<() -> Unit>(256)
     private val dropped = AtomicInteger()
+    private val _rawNotice = kotlinx.coroutines.flow.MutableStateFlow(RawCaptureNotice())
+    val rawNotice: kotlinx.coroutines.flow.StateFlow<RawCaptureNotice> = _rawNotice
     private val activeSessions = AtomicInteger()
     private val _active = kotlinx.coroutines.flow.MutableStateFlow(0)
     val activeFlow: kotlinx.coroutines.flow.StateFlow<Int> = _active
@@ -45,6 +47,7 @@ class FileNavigationTrace(private val directory: File, private val fileLimit: Lo
         val session = UUID.randomUUID().toString()
         return NavigationTraceSink { event, fields ->
             try {
+                _rawNotice.value = RawCapturePresentation.update(_rawNotice.value,event,fields)
                 if(event == "session_start") _active.value = activeSessions.incrementAndGet()
                 if(event == "session_end") _active.value = activeSessions.updateAndGet { (it-1).coerceAtLeast(0) }
                 val row = JSONObject()
