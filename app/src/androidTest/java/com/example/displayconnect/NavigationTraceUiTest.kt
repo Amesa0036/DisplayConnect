@@ -24,8 +24,8 @@ class NavigationTraceUiTest {
         TransmissionHub.setNavigating(false)
         compose.setContent { DisplayConnectTheme { SettingsScreen(onNavigateBack = {},section="advanced") } }
         compose.onNodeWithText("Registro privado de navegacion").assertIsDisplayed()
-        compose.onNodeWithText("Guardar copia del registro").assertIsDisplayed().assertIsEnabled()
-        compose.onNodeWithText("Borrar registro privado").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Guardar copia del registro").performScrollTo().assertIsDisplayed().assertIsEnabled()
+        compose.onNodeWithText("Borrar registro privado").performScrollTo().assertIsDisplayed().performClick()
         compose.onNodeWithText("Se borra el registro de navegacion",substring=true).assertIsDisplayed()
         compose.onNodeWithText("Cancelar").assertIsDisplayed().performClick()
         capture("navigation-private-controls.png")
