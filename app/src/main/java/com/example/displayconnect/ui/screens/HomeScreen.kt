@@ -175,6 +175,8 @@ fun HomeScreen(
     var recentList by remember { mutableStateOf(recents.load()) }
     val favorites = remember { FavoriteDestinations(context.applicationContext) }
     var favoriteList by remember { mutableStateOf(favorites.load()) }
+    val rawNotice by viewModel.rawCaptureNotice.collectAsState()
+    val traceActive by viewModel.navigationTraceActive.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -216,6 +218,7 @@ fun HomeScreen(
                 }
             }
             // Barra superior: chip Bluetooth + ajustes
+            com.example.displayconnect.ui.components.RawCaptureStatus(rawNotice)
             if (!uiState.isNavigating) Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -353,6 +356,7 @@ fun HomeScreen(
                                     }
                                     viewModel.startNavigation(onRequestLocationPermission)
                                 },
+                                enabled = traceActive==0 && !rawNotice.copying,
                                 modifier = Modifier.fillMaxWidth().height(64.dp),
                                 shape = RoundedCornerShape(20.dp),
                                 colors = ButtonDefaults.buttonColors(
@@ -444,6 +448,7 @@ fun HomeScreen(
                     onPick = { gpxLauncher.launch(arrayOf("*/*")) },
                     onPrepare = { viewModel.prepareGpxRoute() },
                     onStart = { viewModel.startGpxNavigation(onRequestLocationPermission) },
+                    startAllowed = traceActive==0 && !rawNotice.copying,
                     onClear = { viewModel.clearGpx() }
                 )
             }
@@ -468,6 +473,7 @@ private fun GpxSection(
     onPick: () -> Unit,
     onPrepare: () -> Unit,
     onStart: () -> Unit,
+    startAllowed: Boolean = true,
     onClear: () -> Unit
 ) {
     if (uiState.gpxStatus == "none") {
@@ -525,6 +531,7 @@ private fun GpxSection(
                     }
                     Button(
                         onClick = onStart,
+                        enabled = startAllowed,
                         modifier = Modifier.fillMaxWidth().height(64.dp),
                         shape = RoundedCornerShape(20.dp),
                         colors = ButtonDefaults.buttonColors(
