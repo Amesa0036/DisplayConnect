@@ -79,7 +79,7 @@ jobs:
           emulator-boot-timeout: 600
           script: |
             mkdir -p ui-evidence
-            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; for f in raw-capturing raw-copying raw-received raw-partial raw-failed raw-no-memory raw-second-session raw-legacy raw-settings-copying raw-settings-partial; do adb pull /data/local/tmp/$f.png ui-evidence/ || true; done; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
+            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; for f in raw-capturing raw-copying raw-received raw-partial raw-failed raw-no-memory raw-second-session raw-legacy raw-settings-copying raw-settings-partial raw-home-copying raw-route-copying raw-source-active raw-source-copying; do adb pull /data/local/tmp/$f.png ui-evidence/ || true; done; cp -r app/build/reports/androidTests ui-evidence/android-test-reports || true; cp -r app/build/outputs/androidTest-results ui-evidence/android-test-results || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
 
             # Required navigation evidence, fail rather than silently omit it.
             adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/
@@ -92,22 +92,29 @@ jobs:
             adb pull /data/local/tmp/navigation-initial-no-fix-destination.png ui-evidence/
 
             # Raw diagnostic notices are required, including actual Settings controls.
-            for state in capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial; do
-              adb pull "/data/local/tmp/raw-$state.png" ui-evidence/
-              test -s "ui-evidence/raw-$state.png"
-            done
-            cp -r app/build/reports/androidTests ui-evidence/android-test-reports
-            cp -r app/build/outputs/androidTest-results ui-evidence/android-test-results
-            python3 - <<'PYIMAGES'
-            from pathlib import Path
-            import struct
-            for p in Path('ui-evidence').glob('raw-*.png'):
-                data=p.read_bytes()
-                assert data[:8]==b'\x89PNG\r\n\x1a\n', p
-                w,h=struct.unpack('>II',data[16:24])
-                assert w>=300 and h>=500,(p,w,h)
-                print(p,w,h)
-            PYIMAGES
+            for state in capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying; do adb pull "/data/local/tmp/raw-$state.png" ui-evidence/; test -s "ui-evidence/raw-$state.png"; done
+            test -d ui-evidence/android-test-reports
+            test -d ui-evidence/android-test-results
+
+      - name: Validate required UI files and test reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYIMAGES'
+          from pathlib import Path
+          import struct
+          names = ["raw-"+s for s in "capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying".split()]
+          names += ["navigation-"+s for s in "private-controls guard-warning initial-unconfirmed initial-no-fix initial-confirm-dialog initial-destination-choice initial-destination-dialog initial-no-fix-destination".split()]
+          for name in names:
+              p=Path('ui-evidence',name+'.png')
+              data=p.read_bytes()
+              assert data[:8]==b'\x89PNG\r\n\x1a\n', p
+              w,h=struct.unpack('>II',data[16:24])
+              assert w>=300 and h>=500,(p,w,h)
+              print(p,w,h)
+          assert list(Path('ui-evidence/android-test-reports').rglob('*.html')), 'Missing test report'
+          assert list(Path('ui-evidence/android-test-results').rglob('*.xml')), 'Missing test results'
+          PYIMAGES
 
       - name: Retain UI evidence
         if: always()
