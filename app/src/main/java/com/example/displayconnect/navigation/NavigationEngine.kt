@@ -274,6 +274,15 @@ class NavigationEngine(
         }
     }
 
+    /** Retains the closing job before stopNavigation clears it. Joining also waits
+     * for withPositionSession's owner and its non-cancellable STOP/raw retrieval. */
+    suspend fun stopNavigationAndAwaitClosure(): Boolean {
+        val closing=locationJob
+        stopNavigation()
+        closing?.join()
+        return (locationTracker as? HecateGnssSource)?.closureConfirmed ?: true
+    }
+
     fun stopNavigation() {
         if (locationJob != null) trace.record("session_stop", emptyMap())
         advanceGuard.reset(); guardedProgress = null; motionEvidenceAtMs = 0L
