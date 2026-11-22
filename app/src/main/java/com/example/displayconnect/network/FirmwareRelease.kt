@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit
  */
 object FirmwareRelease {
 
-    data class Manifest(val version: String, val size: Int, val sha256: String, val binUrl: String)
+    data class Manifest(val version: String, val size: Int, val sha256: String, val binUrl: String, val diagnostic: Boolean = false)
 
     private const val RELEASE_URL =
         "https://api.github.com/repos/Amesa0036/DisplayConnect/releases/latest"
@@ -24,10 +24,11 @@ object FirmwareRelease {
         .readTimeout(60, TimeUnit.SECONDS)
         .build()
 
-    suspend fun fetchLatest(hardwareModel: String?): Result<Manifest> = withContext(Dispatchers.IO) {
+    suspend fun fetchLatest(hardwareModel: String?, trial: Boolean = false): Result<Manifest> = withContext(Dispatchers.IO) {
         runCatching {
             val manifestName = HardwareUpdatePolicy.manifestName(hardwareModel)
-            val release = getJson(RELEASE_URL)
+            val source = FirmwareChannelPolicy.source(hardwareModel, trial)
+            val release = getJson(source ?: error("Canal Hecate aun no publicado; no se usara otro canal"))
             val assets = release.optJSONArray("assets")
                 ?: error("La release no tiene archivos")
             var manifestUrl: String? = null
@@ -39,6 +40,7 @@ object FirmwareRelease {
             }
             checkNotNull(manifestUrl) { "No hay firmware publicado para esta placa ($manifestName)" }
             val m = getJson(manifestUrl)
+            FirmwareChannelPolicy.requireChannel(hardwareModel, trial, m)
             HardwareUpdatePolicy.requireManifest(hardwareModel,
                 m.optString("hardware_model").takeIf { it.isNotBlank() },
                 m.optString("project_name").takeIf { it.isNotBlank() },
@@ -48,17 +50,21 @@ object FirmwareRelease {
                 version = m.getString("version"),
                 size = m.getInt("size"),
                 sha256 = m.getString("sha256").lowercase(),
-                binUrl = m.getString("bin_url")
+                binUrl = m.getString("bin_url"),
+                diagnostic = trial
             )
         }
     }
 
     suspend fun download(url: String): Result<ByteArray> = withContext(Dispatchers.IO) {
         runCatching {
+            require(url.startsWith("https://")) { "Se requiere HTTPS" }
             val req = Request.Builder().url(url).header("User-Agent", "DisplayConnect").build()
             client.newCall(req).execute().use { resp ->
                 check(resp.isSuccessful) { "Descarga fallida (${resp.code})" }
-                resp.body?.bytes() ?: error("Respuesta vacia")
+                check(resp.request.url.isHttps) { "Redireccion no segura" }
+                val body=resp.body ?: error("Respuesta vacia")
+                body.byteStream().use { LocalFirmwareFile.readBounded(it) }
             }
         }
     }
