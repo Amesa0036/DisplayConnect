@@ -15,6 +15,8 @@ fun FirmwareUpdateCard(
     progress: Int,
     message: String?,
     needsUsb: Boolean,
+    allowLocalFile: Boolean = false,
+    onLocalFile: () -> Unit = {},
     onUpdate: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -24,6 +26,10 @@ fun FirmwareUpdateCard(
             if (needsUsb) Text("Esta Hecate necesita primero el receptor OTA por USB. No se usara firmware de otra placa.", style = MaterialTheme.typography.bodyMedium)
             Button(onClick = onUpdate, enabled = connected && canUpdate && !busy && !needsUsb) {
                 Text(if (busy) "Actualizando..." else "Buscar actualizacion")
+            }
+            if (allowLocalFile) {
+                OutlinedButton(onClick=onLocalFile,enabled=connected && canUpdate && !busy && !needsUsb) { Text("Elegir archivo firmado (prueba)") }
+                Text("Prueba local: no publica firmware ni cambia el canal normal. Elegir un archivo no lo envia.",style=MaterialTheme.typography.bodySmall)
             }
             if (!connected) Text("Conecta la placa primero.", style = MaterialTheme.typography.bodySmall)
             if (busy && progress >= 0) {
