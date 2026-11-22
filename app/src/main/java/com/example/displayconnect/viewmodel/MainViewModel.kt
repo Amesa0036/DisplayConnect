@@ -179,6 +179,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val navigationTraceActive = app.navigationTrace.activeFlow
     val rawCaptureNotice = app.navigationTrace.rawNotice
     private fun navigationReadyToStart(): Boolean {
+        if (_otaBusy.value) { _uiState.update { it.copy(errorMessage="Espera a que termine la operacion de firmware antes de iniciar navegacion.") };return false }
         if(app.navigationTrace.activeFlow.value==0 && !app.navigationTrace.rawNotice.value.copying) return true
         _uiState.update { it.copy(errorMessage="Espera al cierre del GPS y la copia del registro antes de empezar otra ruta.") }
         return false
@@ -394,6 +395,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _otaBusy.value = false
                 _otaProgress.value = -1
             }
+        }
+    }
+
+    data class LocalFirmwarePreview(val version:String,val size:Int,val sha256:String,val boardName:String)
+    private val _localFirmwarePreview=MutableStateFlow<LocalFirmwarePreview?>(null)
+    val localFirmwarePreview=_localFirmwarePreview.asStateFlow()
+    private var localFirmware:com.example.displayconnect.network.LocalFirmwareImage?=null
+    private var localFirmwareBoard:com.example.displayconnect.network.BoardInfo?=null
+    private var localFirmwareReadJob:Job?=null
+    fun localFirmwareToolsEnabled():Boolean = app.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+    private fun firmwareIdle():Boolean = !_uiState.value.isNavigating && !navClient.boardBusy.value && !_otaBusy.value && !_imuBusy.value && !_shadowBusy.value && !_imuRunning.value && app.navigationTrace.activeFlow.value==0 && !app.navigationTrace.rawNotice.value.copying
+    fun dismissLocalFirmware() {
+        localFirmwareReadJob?.cancel();localFirmwareReadJob=null
+        localFirmware=null;localFirmwareBoard=null;_localFirmwarePreview.value=null
+    }
+    fun prepareLocalFirmware(uri:Uri?) {
+        dismissLocalFirmware()
+        if(uri==null)return
+        if(!localFirmwareToolsEnabled() || !firmwareIdle())return
+        if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED) {
+            _otaMessage.value="Conecta la placa primero.";return
+        }
+        _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value="Leyendo y verificando el archivo local..."
+        localFirmwareReadJob=viewModelScope.launch {
+            try {
+                val board=navClient.boardCommand("board_info").getOrThrow()
+                check(board.hardwareModel==com.example.displayconnect.network.HardwareUpdatePolicy.G){"El archivo de prueba es solo para Hecate G"}
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(board.hardwareModel,board.otaEnabled)
+                val candidate=withContext(Dispatchers.IO) {
+                    app.contentResolver.openInputStream(uri)?.use { com.example.displayconnect.network.LocalFirmwareFile.read(it) }
+                        ?: error("No se pudo abrir el archivo")
+                }
+                ensureActive()
+                check(_uiState.value.connectionState==com.example.displayconnect.models.ConnectionState.CONNECTED && navClient.boardInfo.value==board){"La placa ha cambiado durante la lectura"}
+                localFirmware=candidate;localFirmwareBoard=board
+                _localFirmwarePreview.value=LocalFirmwarePreview(candidate.version,candidate.size,candidate.sha256,board.name)
+                _otaMessage.value="Archivo firmado verificado. Falta confirmar el envio; no se ha escrito en la placa."
+            } catch(e:kotlinx.coroutines.CancellationException){throw e
+            } catch(e:Exception){_otaMessage.value="Archivo no preparado: ${e.message}"
+            } finally {_otaBusy.value=false;_otaProgress.value=-1}
+        }
+    }
+    fun confirmLocalFirmwareUpdate() {
+        val candidate=localFirmware?:return
+        val expected=localFirmwareBoard?:return
+        if(!localFirmwareToolsEnabled() || !firmwareIdle())return
+        if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED){dismissLocalFirmware();_otaMessage.value="Conecta la placa primero.";return}
+        localFirmware=null;localFirmwareBoard=null;_localFirmwarePreview.value=null
+        _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value="Comprobando la placa antes de enviar el archivo..."
+        viewModelScope.launch {
+            try {
+                val live=navClient.boardCommand("board_info").getOrThrow()
+                check(live==expected && live.hardwareModel==com.example.displayconnect.network.HardwareUpdatePolicy.G){"La placa ha cambiado; el archivo no se enviara"}
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(live.hardwareModel,live.otaEnabled)
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireImage(live.hardwareModel,candidate.bytes,candidate.version)
+                check(sha256Hex(candidate.bytes)==candidate.sha256){"El archivo preparado ha cambiado"}
+                _otaMessage.value=com.example.displayconnect.network.OtaMessages.TRANSFERRING
+                val result=navClient.otaUpdate(candidate.bytes,candidate.sha256,live,candidate.version){sent,total->_otaProgress.value=sent*100/total}
+                _otaMessage.value=result.fold(onSuccess={com.example.displayconnect.network.OtaMessages.accepted(candidate.version)},onFailure={com.example.displayconnect.network.OtaMessages.failed(it.message)})
+            } catch(e:kotlinx.coroutines.CancellationException){throw e
+            } catch(e:Exception){_otaMessage.value="Actualizacion no iniciada: ${e.message}"
+            } finally {_otaBusy.value=false;_otaProgress.value=-1}
         }
     }
 
