@@ -282,34 +282,15 @@ fun SettingsScreen(
             StatsCard(stats = stats.copy(resolution = settings.resolutionLabel))
             }
             if (section == "preferences") {
-            SectionCard(title = "Firmware de la placa") {
-                val connected = mainUiState.connectionState == ConnectionState.CONNECTED
-                Text(
-                    "Consulta la actualizacion compatible con esta placa y la instala por Bluetooth. Hecate aun no tiene un canal publicado. Al terminar, comprueba la version al reconectar.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Button(
-                    onClick = { mainViewModel.startFirmwareUpdate() },
-                    enabled = connected && boardInfo != null && !mainUiState.isNavigating && !otaBusy && !imuBusy && !imuRunning
-                ) {
-                    Text(if (otaBusy) "Actualizando..." else "Buscar actualizacion")
-                }
-                if (!connected) {
-                    Text("Conecta la placa primero.", style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                if (otaBusy && otaProgress >= 0) {
-                    LinearProgressIndicator(
-                        progress = { otaProgress / 100f },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Text("$otaProgress%", style = MaterialTheme.typography.bodySmall)
-                } else if (otaBusy) {
-                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                }
-                otaMessage?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
-            }
+            com.example.displayconnect.ui.components.FirmwareUpdateCard(
+                connected = mainUiState.connectionState == ConnectionState.CONNECTED,
+                canUpdate = boardInfo != null && !mainUiState.isNavigating && !imuBusy && !imuRunning && !shadowBusy && !mainViewModel.boardBusy.collectAsState().value,
+                busy = otaBusy,
+                progress = otaProgress,
+                message = otaMessage,
+                needsUsb = boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G && boardInfo?.otaEnabled != true,
+                onUpdate = { mainViewModel.startFirmwareUpdate() }
+            )
 
             }
             Spacer(modifier = Modifier.height(16.dp))
