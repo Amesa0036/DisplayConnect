@@ -340,61 +340,66 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startFirmwareUpdate() {
-        if (_uiState.value.isNavigating || navClient.boardBusy.value || _otaBusy.value || _imuBusy.value || _shadowBusy.value || _imuRunning.value) return
-        if (_uiState.value.connectionState != com.example.displayconnect.models.ConnectionState.CONNECTED) {
-            _otaMessage.value = "Conecta la placa primero."
-            return
-        }
+    data class RemoteFirmwarePreview(val version:String,val size:Int,val sha256:String,val boardName:String,val diagnostic:Boolean,val installed:String)
+    private val _remoteFirmwarePreview=MutableStateFlow<RemoteFirmwarePreview?>(null)
+    val remoteFirmwarePreview=_remoteFirmwarePreview.asStateFlow()
+    private var remoteFirmware:Pair<com.example.displayconnect.network.FirmwareRelease.Manifest,ByteArray>?=null
+    private var remoteBoard:com.example.displayconnect.network.BoardInfo?=null
+    private var remoteInstalled:String?=null
+    fun dismissRemoteFirmware() { remoteFirmware=null;remoteBoard=null;remoteInstalled=null;_remoteFirmwarePreview.value=null }
+    fun startFirmwareUpdate(trial:Boolean=false) {
+        if(!firmwareIdle() || _remoteFirmwarePreview.value!=null || _localFirmwarePreview.value!=null)return
+        if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED){_otaMessage.value="Conecta la placa primero.";return}
+        _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value=com.example.displayconnect.network.OtaMessages.CHECKING
         viewModelScope.launch {
-            _otaBusy.value = true
-            _otaProgress.value = -1
-            _otaMessage.value = com.example.displayconnect.network.OtaMessages.CHECKING
             try {
-                // Query live capture state on every attempt, including app restart/reconnect.
-                val version = navClient.boardFirmwareVersion().getOrNull()
-                if (version?.contains("passive") == true) {
-                    if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
-                    val capture = navClient.imuCommand("status").getOrThrow()
-                    _imuRunning.value = capture.getBoolean("running")
-                    check(!capture.getBoolean("running") && !capture.getBoolean("unsaved")) { "Para y descarga la captura antes de actualizar" }
+                val version=navClient.boardFirmwareVersion().getOrNull()
+                if(version?.contains("passive")==true){
+                    val st=navClient.imuCommand("status").getOrThrow()
+                    check(!st.getBoolean("running")&&!st.getBoolean("unsaved")){"Para y descarga la captura antes de actualizar"}
                 }
-                val updateBoard = navClient.boardCommand("board_info").getOrThrow()
-                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(updateBoard.hardwareModel, updateBoard.otaEnabled)
-                val manifest = FirmwareRelease.fetchLatest(updateBoard.hardwareModel).getOrElse {
-                    _otaMessage.value = "No se pudo consultar la actualizacion: ${it.message}"
-                    return@launch
+                val board=navClient.boardCommand("board_info").getOrThrow()
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(board.hardwareModel,board.otaEnabled)
+                val manifest=FirmwareRelease.fetchLatest(board.hardwareModel,trial).getOrThrow()
+                val installed=navClient.boardFirmwareVersion().getOrThrow()
+                check(installed!=manifest.version){"La placa ya tiene ${manifest.version}"}
+                _otaMessage.value=com.example.displayconnect.network.OtaMessages.downloading(manifest.version)
+                val bin=FirmwareRelease.download(manifest.binUrl).getOrThrow()
+                check(bin.size==manifest.size&&sha256Hex(bin)==manifest.sha256){"Descarga no valida"}
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireImage(board.hardwareModel,bin,manifest.version)
+                if(board.hardwareModel==com.example.displayconnect.network.HardwareUpdatePolicy.G)
+                    com.example.displayconnect.network.LocalFirmwareFile.read(bin.inputStream())
+                check(navClient.boardCommand("board_info").getOrThrow()==board){"La placa ha cambiado"}
+                remoteFirmware=manifest to bin;remoteBoard=board;remoteInstalled=installed
+                _remoteFirmwarePreview.value=RemoteFirmwarePreview(manifest.version,bin.size,manifest.sha256,board.name,trial,installed)
+                _otaMessage.value="Descarga comprobada. Falta aceptar el envio; no se ha escrito en la placa."
+            } catch(e:kotlinx.coroutines.CancellationException){throw e
+            } catch(e:Exception){dismissRemoteFirmware();_otaMessage.value="Actualizacion no preparada: ${e.message}"
+            } finally {_otaBusy.value=false;_otaProgress.value=-1}
+        }
+    }
+    fun confirmRemoteFirmwareUpdate(){
+        val (manifest,bin)=remoteFirmware?:return;val expected=remoteBoard?:return;val installed=remoteInstalled?:return
+        if(!firmwareIdle())return
+        dismissRemoteFirmware();_otaBusy.value=true;_otaProgress.value=-1
+        viewModelScope.launch {
+            try {
+                check(_uiState.value.connectionState==com.example.displayconnect.models.ConnectionState.CONNECTED){"Conecta la placa primero"}
+                val live=navClient.boardCommand("board_info").getOrThrow();check(live==expected){"La placa ha cambiado; busca de nuevo"}
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(live.hardwareModel,live.otaEnabled)
+                check(navClient.boardFirmwareVersion().getOrThrow()==installed){"La version instalada ha cambiado; busca de nuevo"}
+                if(installed.contains("passive")){
+                    val st=navClient.imuCommand("status").getOrThrow()
+                    check(!st.getBoolean("running")&&!st.getBoolean("unsaved")){"Para y descarga la captura antes de actualizar"}
                 }
-                val boardVersion = navClient.boardFirmwareVersion().getOrNull()
-                if (boardVersion == manifest.version) {
-                    _otaMessage.value = "La placa ya tiene ${manifest.version}."
-                    return@launch
-                }
-                _otaMessage.value = com.example.displayconnect.network.OtaMessages.downloading(manifest.version)
-                val bin = FirmwareRelease.download(manifest.binUrl).getOrElse {
-                    _otaMessage.value = "No se pudo descargar el firmware: ${it.message}"
-                    return@launch
-                }
-                if (bin.size != manifest.size || sha256Hex(bin) != manifest.sha256) {
-                    _otaMessage.value = com.example.displayconnect.network.OtaMessages.invalidDownload()
-                    return@launch
-                }
-                _otaMessage.value = com.example.displayconnect.network.OtaMessages.TRANSFERRING
-                val confirmedBoard = navClient.boardCommand("board_info").getOrThrow()
-                check(confirmedBoard == updateBoard) { "La placa ha cambiado durante la descarga" }
-                val result = navClient.otaUpdate(bin, manifest.sha256, confirmedBoard, manifest.version) { sent, total ->
-                    _otaProgress.value = (sent * 100) / total
-                }
-                _otaMessage.value = result.fold(
-                    onSuccess = { com.example.displayconnect.network.OtaMessages.accepted(manifest.version) },
-                    onFailure = { com.example.displayconnect.network.OtaMessages.failed(it.message) }
-                )
-            } catch (e: kotlinx.coroutines.CancellationException) { throw e
-            } catch (e: Exception) { _otaMessage.value = "Actualizacion no iniciada: ${e.message}"
-            } finally {
-                _otaBusy.value = false
-                _otaProgress.value = -1
-            }
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireImage(live.hardwareModel,bin,manifest.version)
+                check(sha256Hex(bin)==manifest.sha256&&bin.size==manifest.size){"La descarga ha cambiado"}
+                _otaMessage.value=com.example.displayconnect.network.OtaMessages.TRANSFERRING
+                val result=navClient.otaUpdate(bin,manifest.sha256,live,manifest.version){sent,total->_otaProgress.value=sent*100/total}
+                _otaMessage.value=result.fold(onSuccess={com.example.displayconnect.network.OtaMessages.accepted(manifest.version)},onFailure={com.example.displayconnect.network.OtaMessages.failed(it.message)})
+            } catch(e:kotlinx.coroutines.CancellationException){throw e
+            } catch(e:Exception){_otaMessage.value="Actualizacion no iniciada: ${e.message}"
+            } finally {_otaBusy.value=false;_otaProgress.value=-1}
         }
     }
 
@@ -413,7 +418,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun prepareLocalFirmware(uri:Uri?) {
         dismissLocalFirmware()
         if(uri==null)return
-        if(!localFirmwareToolsEnabled() || !firmwareIdle())return
+        if(!localFirmwareToolsEnabled() || !firmwareIdle() || _remoteFirmwarePreview.value!=null)return
         if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED) {
             _otaMessage.value="Conecta la placa primero.";return
         }
@@ -440,7 +445,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun confirmLocalFirmwareUpdate() {
         val candidate=localFirmware?:return
         val expected=localFirmwareBoard?:return
-        if(!localFirmwareToolsEnabled() || !firmwareIdle())return
+        if(!localFirmwareToolsEnabled() || !firmwareIdle() || _remoteFirmwarePreview.value!=null)return
         if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED){dismissLocalFirmware();_otaMessage.value="Conecta la placa primero.";return}
         localFirmware=null;localFirmwareBoard=null;_localFirmwarePreview.value=null
         _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value="Comprobando la placa antes de enviar el archivo..."
