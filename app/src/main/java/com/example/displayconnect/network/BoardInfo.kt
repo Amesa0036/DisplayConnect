@@ -9,7 +9,8 @@ data class BoardInfo(
     val name: String,
     val address: String,
     val hardwareModel: String? = null,
-    val navigationDisplay: Boolean = true
+    val navigationDisplay: Boolean = true,
+    val otaEnabled: Boolean? = null
 )
 internal fun navigationDisplayCapability(raw: Any?): Boolean =
     raw != false
