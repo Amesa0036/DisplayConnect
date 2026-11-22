@@ -93,7 +93,7 @@ jobs:
 
             # Raw diagnostic notices are required, including actual Settings controls.
             for state in capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying; do adb pull "/data/local/tmp/raw-$state.png" ui-evidence/; test -s "ui-evidence/raw-$state.png"; done
-            for state in disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings; do adb pull "/data/local/tmp/ota-$state.png" ui-evidence/; test -s "ui-evidence/ota-$state.png"; done
+            for state in disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings local-confirmation-fixture local-disabled-fixture; do adb pull "/data/local/tmp/ota-$state.png" ui-evidence/; test -s "ui-evidence/ota-$state.png"; done
             test -d ui-evidence/android-test-reports
             test -d ui-evidence/android-test-results
 
@@ -106,7 +106,7 @@ jobs:
           import struct
           names = ["raw-"+s for s in "capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying".split()]
           names += ["navigation-"+s for s in "private-controls guard-warning initial-unconfirmed initial-no-fix initial-confirm-dialog initial-destination-choice initial-destination-dialog initial-no-fix-destination".split()]
-          names += ["ota-"+s for s in "disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings".split()]
+          names += ["ota-"+s for s in "disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings local-confirmation-fixture local-disabled-fixture".split()]
           for name in names:
               p=Path('ui-evidence',name+'.png')
               data=p.read_bytes()
