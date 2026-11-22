@@ -89,9 +89,60 @@ class OtaUpdateUiTest {
         compose.onNodeWithText("Conecta la placa primero.").performScrollTo().assertIsDisplayed()
         capture("ota-actual-settings")
     }
-    private fun capture(name:String) {
+    @Test fun localFileTrialRequiresExplicitSecondConfirmation() {
+        val visible=mutableStateOf(false);var picked=0;var sent=0
+        compose.setContent { DisplayConnectTheme {
+            Column(Modifier.fillMaxSize().padding(16.dp)) {
+                FirmwareUpdateCard(true,true,false,-1,null,false,allowLocalFile=true,onLocalFile={picked++;visible.value=true},onUpdate={})
+                if(visible.value)com.example.displayconnect.ui.components.LocalFirmwareConfirmDialog("0.28.21-175g-ota1-LOCAL",659456,"0123456789abcdef".repeat(4),"Hecate",
+                    onCancel={visible.value=false},onConfirm={sent++;visible.value=false})
+            }
+        } }
+        compose.onNodeWithText("Elegir archivo firmado (prueba)").assertIsEnabled().performClick()
+        compose.runOnIdle{assertEquals(1,picked);assertEquals(0,sent)}
+        compose.onNodeWithText("Enviar archivo de prueba").assertIsDisplayed()
+        compose.onNodeWithText("la placa se reiniciara",substring=true).assertIsDisplayed()
+        compose.onNodeWithText("Cancelar").assertIsDisplayed()
+        capture("ota-local-confirmation-fixture",dialog=true)
+        compose.onNodeWithText("Cancelar").performClick()
+        compose.runOnIdle{assertEquals(0,sent)}
+        compose.onNodeWithText("Elegir archivo firmado (prueba)").performClick()
+        compose.onNodeWithText("Enviar por Bluetooth").performClick()
+        compose.runOnIdle{assertEquals(1,sent)}
+    }
+    @Test fun localFileButtonCannotBypassUsbBootstrapOrBusyState() {
+        val busy=mutableStateOf(false);var clicks=0
+        compose.setContent { DisplayConnectTheme { FirmwareUpdateCard(true,true,busy.value,-1,null,!busy.value,
+            allowLocalFile=true,onLocalFile={clicks++},onUpdate={}) } }
+        compose.onNodeWithText("Elegir archivo firmado (prueba)").assertIsNotEnabled()
+        compose.runOnIdle{busy.value=true}
+        compose.onNodeWithText("Elegir archivo firmado (prueba)").assertIsNotEnabled()
+        compose.runOnIdle{assertEquals(0,clicks)}
+        capture("ota-local-disabled-fixture")
+    }
+    @Test fun androidVerifiesRsaPssAndRejectsChangedFileBeforeAnyTransfer() {
+        // Ephemeral synthetic block, not a bootable firmware or a board transfer.
+        val keys=java.security.KeyPairGenerator.getInstance("RSA").apply{initialize(3072)}.generateKeyPair()
+        val b=ByteArray(8192){0xff.toByte()};b.fill(0,0,4096);val start=4096
+        b[start]=0xe7.toByte();b[start+1]=2;b[start+2]=0;b[start+3]=0
+        java.security.MessageDigest.getInstance("SHA-256").digest(b.copyOfRange(0,start)).copyInto(b,start+4)
+        val k=keys.public as java.security.interfaces.RSAPublicKey
+        fun put(n:java.math.BigInteger,off:Int,len:Int){val le=n.toByteArray().reversedArray();repeat(len){b[start+off+it]=if(it<le.size)le[it] else 0}}
+        put(k.modulus,36,384);put(k.publicExponent,420,4)
+        val signer=runCatching{java.security.Signature.getInstance("RSASSA-PSS")}.getOrElse{java.security.Signature.getInstance("SHA256withRSA/PSS")}
+        signer.initSign(keys.private);signer.setParameter(java.security.spec.PSSParameterSpec("SHA-256","MGF1",java.security.spec.MGF1ParameterSpec.SHA256,32,1));signer.update(b,0,start)
+        signer.sign().reversedArray().copyInto(b,start+812)
+        val crc=java.util.zip.CRC32().apply{update(b,start,1196)}.value;repeat(4){b[start+1196+it]=((crc ushr(it*8)) and 255).toByte()}
+        val sha=java.security.MessageDigest.getInstance("SHA-256").digest(keys.public.encoded).joinToString(""){"%02x".format(it)}
+        val verifier=com.example.displayconnect.network.FirmwareSignatureVerifier(sha)
+        verifier.requireAuthentic(b)
+        b[500]=1
+        assertTrue(runCatching{verifier.requireAuthentic(b)}.isFailure)
+    }
+    private fun capture(name:String,dialog:Boolean=false) {
         compose.waitForIdle()
-        val bitmap=compose.onRoot().captureToImage().asAndroidBitmap()
+        val root=if(dialog)compose.onNode(isRoot() and hasAnyDescendant(hasText("Enviar archivo de prueba"))) else compose.onRoot()
+        val bitmap=root.captureToImage().asAndroidBitmap()
         val colors=mutableMapOf<Int,Int>()
         for(y in 0 until 64)for(x in 0 until 64){val c=bitmap.getPixel(x*(bitmap.width-1)/63,y*(bitmap.height-1)/63) and 0x00f0f0f0;colors[c]=(colors[c]?:0)+1}
         assertTrue("Blank screenshot $name",(colors.values.maxOrNull()?:4096)<4000)
