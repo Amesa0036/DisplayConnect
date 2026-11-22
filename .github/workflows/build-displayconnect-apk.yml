@@ -38,8 +38,17 @@ jobs:
           test -n "$APKSIGNER"
           mkdir -p signed-apk
           "$APKSIGNER" sign --ks "$RUNNER_TEMP/displayconnect-signing/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out signed-apk/app-debug.apk app/build/outputs/apk/debug/app-debug.apk
-          "$APKSIGNER" verify --verbose --print-certs signed-apk/app-debug.apk > signed-apk/apksigner.txt
-          grep -Fx 'Signer #1 certificate SHA-256 digest: 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645' signed-apk/apksigner.txt
+          "$APKSIGNER" verify --verbose --print-certs signed-apk/app-debug.apk | tee signed-apk/apksigner.txt
+          python3 - <<'PYVERIFY'
+          import re
+          from pathlib import Path
+          text = Path('signed-apk/apksigner.txt').read_text()
+          hashes = re.findall(r'^.*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$', text, re.M)
+          expected = '82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645'
+          if len(hashes) != 1 or hashes[0].lower() != expected:
+              raise SystemExit('Final APK signer mismatch. Upload blocked.')
+          print('Final APK signature matches the existing fixed certificate.')
+          PYVERIFY
           git rev-parse HEAD > signed-apk/source-commit.txt
           sha256sum signed-apk/app-debug.apk > signed-apk/apk.sha256
       - uses: actions/upload-artifact@v4
