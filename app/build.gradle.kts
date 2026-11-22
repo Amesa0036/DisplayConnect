@@ -16,7 +16,7 @@ android {
         minSdk = 24
         targetSdk = 36
         versionCode = 16
-        versionName = "3.13-hecate-rawdiag-local"
+        versionName = "3.14-hecate-ota1-local"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
