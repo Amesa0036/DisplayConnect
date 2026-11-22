@@ -76,7 +76,7 @@ class BleNavClient(context: Context) {
         scope.launch {
             for (frame in outgoing) {
                 writeMutex.withLock {
-                    writeInChunks(frame.connection, frame.characteristic, frame.bytes)
+                    if (!otaActive.get()) writeInChunks(frame.connection, frame.characteristic, frame.bytes)
                 }
             }
         }
@@ -114,6 +114,7 @@ class BleNavClient(context: Context) {
     suspend fun boardCommand(type: String, newName: String? = null): Result<BoardInfo> = boardMutex.withLock {
         _boardBusy.value = true
         try {
+            check(!otaActive.get()) { "Espera a que termine la actualizacion" }
             val connection = gatt ?: error("La placa no esta conectada")
             val characteristic = rxCharacteristic ?: error("La placa no esta lista")
             check(_connectionState.value == ConnectionState.CONNECTED) { "La placa no esta conectada" }
@@ -146,7 +147,7 @@ class BleNavClient(context: Context) {
             val reportedModel = response.optString("hardware_model").takeIf { it.isNotBlank() }
             val hardwareModel = HardwareUpdatePolicy.resolve(reportedModel, if (reportedModel == null) boardFirmwareVersion().getOrNull() else null)
             check(connection === gatt && address == targetAddress) { "La conexion ha cambiado" }
-            val info = BoardInfo(boardId, boardName, address, hardwareModel, navigationDisplayCapability(response.opt("navigation_display")))
+            val info = BoardInfo(boardId, boardName, address, hardwareModel, navigationDisplayCapability(response.opt("navigation_display")), response.opt("ota_enabled") as? Boolean)
             _boardInfo.value = info
             Result.success(info)
         } catch (e: kotlinx.coroutines.CancellationException) {
@@ -332,7 +333,7 @@ class BleNavClient(context: Context) {
     private fun receiveBoardData(connection: BluetoothGatt, bytes: ByteArray) {
         if (connection !== gatt) return
         // OTA replies may arrive without a trailing newline; accept a bare OTA: chunk as a line.
-        if (otaActive.get()) {
+        if (otaActive.get() && _boardInfo.value?.hardwareModel == HardwareUpdatePolicy.C) {
             val raw = String(bytes, Charsets.UTF_8)
             if (raw.startsWith("OTA:") && !raw.contains("\n") && !raw.contains("\r")) {
                 boardDecoder.reset()
@@ -395,28 +396,37 @@ class BleNavClient(context: Context) {
     suspend fun otaUpdate(
         bin: ByteArray,
         sha256Hex: String,
+        expectedBoard: BoardInfo,
+        expectedVersion: String,
         onProgress: (sent: Int, total: Int) -> Unit
     ): Result<Unit> {
         try {
-            HardwareUpdatePolicy.requireLegacyOtaTarget(_boardInfo.value?.hardwareModel)
-            HardwareUpdatePolicy.requireCImage(bin)
+            require(_boardInfo.value == expectedBoard && expectedBoard.address == targetAddress) { "La placa ha cambiado" }
+            HardwareUpdatePolicy.requireOtaTarget(expectedBoard.hardwareModel, expectedBoard.otaEnabled)
+            HardwareUpdatePolicy.requireImage(expectedBoard.hardwareModel, bin, expectedVersion)
+            require(sha256Hex.matches(Regex("[0-9a-f]{64}")) && java.security.MessageDigest.getInstance("SHA-256").digest(bin).joinToString("") { "%02x".format(it) } == sha256Hex) { "Hash de firmware no valido" }
         }
-        catch (e: IllegalArgumentException) { return Result.failure(e) }
+        catch (e: Exception) { return Result.failure(e) }
         val connection = gatt ?: return Result.failure(Exception("La placa no esta conectada"))
         val characteristic = rxCharacteristic ?: return Result.failure(Exception("La placa no esta lista"))
         if (_connectionState.value != ConnectionState.CONNECTED)
             return Result.failure(Exception("La placa no esta conectada"))
         if (shadowProtected.get()) return Result.failure(Exception("Para y guarda el diagnostico sombra antes de actualizar. Si fallo restauracion, guarda y reinicia primero."))
-        if (!otaActive.compareAndSet(false, true))
+        if (!boardMutex.tryLock()) return Result.failure(Exception("La placa esta ocupada"))
+        if (!otaActive.compareAndSet(false, true)) {
+            boardMutex.unlock()
             return Result.failure(Exception("Ya hay una actualizacion en curso"))
+        }
+        var accepted = false
         _boardBusy.value = true
         while (otaLines.tryReceive().isSuccess) { }
         try {
+            boardDecoder.reset()
             val ready = otaExchange(connection, characteristic,
                 "OTA:BEGIN ${bin.size} $sha256Hex", 120_000)
             if (ready == "OTA:ERR timeout_app")
                 return Result.failure(Exception("Timeout esperando OTA:READY (la placa tarda en borrar la flash)"))
-            if (!ready.startsWith("OTA:READY")) return otaFailure(ready)
+            if (ready != "OTA:READY") return otaFailure(ready)
             var sent = 0
             while (sent < bin.size) {
                 if (connection !== gatt)
@@ -435,21 +445,26 @@ class BleNavClient(context: Context) {
                     val ack = nextOtaLine(30_000)
                     if (ack == "OTA:ERR timeout_app")
                         return Result.failure(Exception("Timeout esperando OTA:ACK (enviados $sent de ${bin.size} bytes)"))
-                    if (!ack.startsWith("OTA:ACK")) return otaFailure(ack)
+                    try { HardwareUpdatePolicy.requireAck(ack, sent) }
+                    catch (e: IllegalArgumentException) { return Result.failure(e) }
                 }
             }
             val deadline = SystemClock.elapsedRealtime() + 60_000
             while (SystemClock.elapsedRealtime() < deadline) {
                 val line = nextOtaLine(deadline - SystemClock.elapsedRealtime())
-                if (line.startsWith("OTA:OK")) return Result.success(Unit)
+                if (line == "OTA:OK") { accepted = true; return Result.success(Unit) }
                 if (line == "OTA:ERR timeout_app")
                     return Result.failure(Exception("Timeout esperando OTA:OK tras la verificacion"))
                 if (line.startsWith("OTA:ERR")) return otaFailure(line)
             }
             return Result.failure(Exception("La placa no confirma la instalacion"))
         } finally {
+            // Binary ingress cannot treat OTA:ABORT as a command mid-image.
+            // For G, disconnect on failure/cancellation before allowing more commands.
+            if (!accepted && expectedBoard.hardwareModel == HardwareUpdatePolicy.G) connection.disconnect()
             otaActive.set(false)
             _boardBusy.value = false
+            boardMutex.unlock()
         }
     }
 
