@@ -33,7 +33,7 @@ jobs:
           script: |
             mkdir -p ui-evidence
             ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.FirmwareChannelsUiTest
-            adb pull /sdcard/Android/data/com.example.displayconnect/files/hecate-trial-confirm.png ui-evidence/
+            adb pull /data/local/tmp/hecate-trial-confirm.png ui-evidence/
             test -s ui-evidence/hecate-trial-confirm.png
       - name: Retain UI evidence
         if: always()
