@@ -141,12 +141,14 @@ class OtaUpdateUiTest {
     }
     private fun capture(name:String,dialog:Boolean=false) {
         compose.waitForIdle()
-        val root=if(dialog)compose.onNode(isRoot() and hasAnyDescendant(hasText("Enviar archivo de prueba"))) else compose.onRoot()
-        val bitmap=root.captureToImage().asAndroidBitmap()
+        val i=InstrumentationRegistry.getInstrumentation()
+        // Compose node capture can read the activity window behind a dialog.
+        // Android's composite screenshot includes the dialog window itself.
+        val bitmap=if(dialog)requireNotNull(i.uiAutomation.takeScreenshot()) else compose.onRoot().captureToImage().asAndroidBitmap()
         val colors=mutableMapOf<Int,Int>()
         for(y in 0 until 64)for(x in 0 until 64){val c=bitmap.getPixel(x*(bitmap.width-1)/63,y*(bitmap.height-1)/63) and 0x00f0f0f0;colors[c]=(colors[c]?:0)+1}
         assertTrue("Blank screenshot $name",(colors.values.maxOrNull()?:4096)<4000)
-        val i=InstrumentationRegistry.getInstrumentation();val file=File(i.targetContext.getExternalFilesDir(null),"$name.png")
+        val file=File(i.targetContext.getExternalFilesDir(null),"$name.png")
         file.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
         val fd=i.uiAutomation.executeShellCommand("cp ${file.absolutePath} /data/local/tmp/$name.png")
         android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes() }
