@@ -24,9 +24,15 @@ class FirmwareChannelsUiTest {
   compose.onNodeWithText("Instalar prueba Hecate").assertIsDisplayed()
   compose.onNodeWithText("SOLO DIAGNOSTICO",substring=true).assertExists()
   compose.waitForIdle()
-  val bmp=compose.onNode(isDialog()).captureToImage().asAndroidBitmap()
+  val bmp=requireNotNull(InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot())
   val ctx=InstrumentationRegistry.getInstrumentation().targetContext
-  File(ctx.getExternalFilesDir(null),"hecate-trial-confirm.png").outputStream().use{bmp.compress(Bitmap.CompressFormat.PNG,100,it)}
+  val file=File(ctx.getExternalFilesDir(null),"hecate-trial-confirm.png")
+  file.outputStream().use{check(bmp.compress(Bitmap.CompressFormat.PNG,100,it))}
+  val fd=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("cp ${file.absolutePath} /data/local/tmp/hecate-trial-confirm.png")
+  android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use{it.readBytes()}
+  val checked=InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("ls -l /data/local/tmp/hecate-trial-confirm.png")
+  val listing=android.os.ParcelFileDescriptor.AutoCloseInputStream(checked).use{String(it.readBytes())}
+  check(listing.contains("hecate-trial-confirm.png")&&!listing.contains("No such"))
   compose.onNodeWithText("Cancelar").performClick()
   compose.runOnIdle{assertEquals(0,sent)}
   compose.onNodeWithText("Buscar prueba Hecate").performClick()
