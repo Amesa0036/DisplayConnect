@@ -77,6 +77,13 @@ fun SettingsScreen(
     val otaBusy by mainViewModel.otaBusy.collectAsState()
     val otaProgress by mainViewModel.otaProgress.collectAsState()
     val otaMessage by mainViewModel.otaMessage.collectAsState()
+    val localFirmwarePreview by mainViewModel.localFirmwarePreview.collectAsState()
+    val localFirmwarePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->mainViewModel.prepareLocalFirmware(uri)}
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { mainViewModel.dismissLocalFirmware() } }
+    localFirmwarePreview?.let { preview ->
+        com.example.displayconnect.ui.components.LocalFirmwareConfirmDialog(preview.version,preview.size,preview.sha256,preview.boardName,
+            onCancel={mainViewModel.dismissLocalFirmware()},onConfirm={mainViewModel.confirmLocalFirmwareUpdate()})
+    }
     val imuMessage by mainViewModel.imuMessage.collectAsState()
     val imuBusy by mainViewModel.imuBusy.collectAsState()
     val imuRunning by mainViewModel.imuRunning.collectAsState()
@@ -289,6 +296,8 @@ fun SettingsScreen(
                 progress = otaProgress,
                 message = otaMessage,
                 needsUsb = boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G && boardInfo?.otaEnabled != true,
+                allowLocalFile = mainViewModel.localFirmwareToolsEnabled() && boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G,
+                onLocalFile = { localFirmwarePicker.launch(arrayOf("application/octet-stream","*/*")) },
                 onUpdate = { mainViewModel.startFirmwareUpdate() }
             )
 
