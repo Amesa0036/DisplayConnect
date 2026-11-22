@@ -1,13 +1,13 @@
 package com.example.displayconnect.network
 import org.json.JSONObject
 
-/** Distribution audience and endpoints are not approved. Fail closed until set.
+/** Only the diagnostic trial has an approved public distribution endpoint.
  * These are release-metadata URLs, not redirects to a private Drive file.
  * Stable and trial must remain separate, even when hosted on the same service. */
 object FirmwareChannelPolicy {
     const val ORIGINAL = "https://api.github.com/repos/Amesa0036/DisplayConnect/releases/latest"
     val hecateUseSource: String? = null
-    val hecateTrialSource: String? = null
+    val hecateTrialSource: String? = "https://api.github.com/repos/Amesa0036/DisplayConnect/releases/454784775"
     fun source(model: String?, trial: Boolean): String? = when(model) {
         HardwareUpdatePolicy.C -> { require(!trial) { "Las pruebas Hecate no admiten la Original" }; ORIGINAL }
         HardwareUpdatePolicy.G -> if(trial) hecateTrialSource else hecateUseSource
