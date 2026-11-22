@@ -348,7 +348,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _otaBusy.value = true
             _otaProgress.value = -1
-            _otaMessage.value = "Buscando actualizaciones..."
+            _otaMessage.value = com.example.displayconnect.network.OtaMessages.CHECKING
             try {
                 // Query live capture state on every attempt, including app restart/reconnect.
                 val version = navClient.boardFirmwareVersion().getOrNull()
@@ -359,6 +359,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     check(!capture.getBoolean("running") && !capture.getBoolean("unsaved")) { "Para y descarga la captura antes de actualizar" }
                 }
                 val updateBoard = navClient.boardCommand("board_info").getOrThrow()
+                com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(updateBoard.hardwareModel, updateBoard.otaEnabled)
                 val manifest = FirmwareRelease.fetchLatest(updateBoard.hardwareModel).getOrElse {
                     _otaMessage.value = "No se pudo consultar la actualizacion: ${it.message}"
                     return@launch
@@ -368,22 +369,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _otaMessage.value = "La placa ya tiene ${manifest.version}."
                     return@launch
                 }
-                _otaMessage.value = "Descargando firmware ${manifest.version}..."
+                _otaMessage.value = com.example.displayconnect.network.OtaMessages.downloading(manifest.version)
                 val bin = FirmwareRelease.download(manifest.binUrl).getOrElse {
                     _otaMessage.value = "No se pudo descargar el firmware: ${it.message}"
                     return@launch
                 }
                 if (bin.size != manifest.size || sha256Hex(bin) != manifest.sha256) {
-                    _otaMessage.value = "La descarga no es valida. Intentalo de nuevo."
+                    _otaMessage.value = com.example.displayconnect.network.OtaMessages.invalidDownload()
                     return@launch
                 }
-                _otaMessage.value = "Actualizando la placa... no la apagues"
-                val result = navClient.otaUpdate(bin, manifest.sha256) { sent, total ->
+                _otaMessage.value = com.example.displayconnect.network.OtaMessages.TRANSFERRING
+                val confirmedBoard = navClient.boardCommand("board_info").getOrThrow()
+                check(confirmedBoard == updateBoard) { "La placa ha cambiado durante la descarga" }
+                val result = navClient.otaUpdate(bin, manifest.sha256, confirmedBoard, manifest.version) { sent, total ->
                     _otaProgress.value = (sent * 100) / total
                 }
                 _otaMessage.value = result.fold(
-                    onSuccess = { "Actualizacion ${manifest.version} instalada. La placa se reinicia sola." },
-                    onFailure = { "Error actualizando: ${it.message}. Comprueba la version al reconectar." }
+                    onSuccess = { com.example.displayconnect.network.OtaMessages.accepted(manifest.version) },
+                    onFailure = { com.example.displayconnect.network.OtaMessages.failed(it.message) }
                 )
             } catch (e: kotlinx.coroutines.CancellationException) { throw e
             } catch (e: Exception) { _otaMessage.value = "Actualizacion no iniciada: ${e.message}"
