@@ -17,15 +17,21 @@ fun FirmwareUpdateCard(
     needsUsb: Boolean,
     allowLocalFile: Boolean = false,
     onLocalFile: () -> Unit = {},
+    allowTrial:Boolean=false,
+    onTrial:()->Unit={},
     onUpdate: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Firmware de la placa", style = MaterialTheme.typography.titleMedium)
-            Text("Busca una imagen compatible y la transfiere por Bluetooth. No apagues la placa durante la transferencia. Una transferencia aceptada no confirma que el nuevo firmware haya arrancado.", style = MaterialTheme.typography.bodySmall)
+            Text("Busca y descarga una imagen compatible. Antes de enviarla veras su version y tendras que aceptarla. No apagues la placa durante la transferencia. Una transferencia aceptada no confirma que el nuevo firmware haya arrancado.", style = MaterialTheme.typography.bodySmall)
             if (needsUsb) Text("Esta Hecate necesita primero el receptor OTA por USB. No se usara firmware de otra placa.", style = MaterialTheme.typography.bodyMedium)
             Button(onClick = onUpdate, enabled = connected && canUpdate && !busy && !needsUsb) {
                 Text(if (busy) "Actualizando..." else "Buscar actualizacion")
+            }
+            if(allowTrial) {
+                OutlinedButton(onClick=onTrial,enabled=connected&&canUpdate&&!busy&&!needsUsb){Text("Buscar prueba Hecate")}
+                Text("Canal separado de diagnostico. No es una actualizacion de uso ni se instala al conectar.",style=MaterialTheme.typography.bodySmall)
             }
             if (allowLocalFile) {
                 OutlinedButton(onClick=onLocalFile,enabled=connected && canUpdate && !busy && !needsUsb) { Text("Elegir archivo firmado (prueba)") }
