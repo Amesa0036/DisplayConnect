@@ -24,7 +24,7 @@ class FirmwareChannelsUiTest {
   compose.onNodeWithText("Instalar prueba Hecate").assertIsDisplayed()
   compose.onNodeWithText("SOLO DIAGNOSTICO",substring=true).assertExists()
   compose.waitForIdle()
-  val bmp=compose.onRoot(isDialog()).captureToImage().asAndroidBitmap()
+  val bmp=compose.onNode(isDialog()).captureToImage().asAndroidBitmap()
   val ctx=InstrumentationRegistry.getInstrumentation().targetContext
   File(ctx.getExternalFilesDir(null),"hecate-trial-confirm.png").outputStream().use{bmp.compress(Bitmap.CompressFormat.PNG,100,it)}
   compose.onNodeWithText("Cancelar").performClick()
