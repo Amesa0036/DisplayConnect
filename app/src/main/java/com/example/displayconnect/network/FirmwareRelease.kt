@@ -26,19 +26,24 @@ object FirmwareRelease {
 
     suspend fun fetchLatest(hardwareModel: String?): Result<Manifest> = withContext(Dispatchers.IO) {
         runCatching {
-            HardwareUpdatePolicy.requireLegacyOtaTarget(hardwareModel)
+            val manifestName = HardwareUpdatePolicy.manifestName(hardwareModel)
             val release = getJson(RELEASE_URL)
             val assets = release.optJSONArray("assets")
                 ?: error("La release no tiene archivos")
             var manifestUrl: String? = null
             for (i in 0 until assets.length()) {
                 val asset = assets.getJSONObject(i)
-                if (asset.optString("name") == MANIFEST_NAME) {
+                if (asset.optString("name") == manifestName) {
                     manifestUrl = asset.getString("browser_download_url")
                 }
             }
-            checkNotNull(manifestUrl) { "La release no trae $MANIFEST_NAME" }
+            checkNotNull(manifestUrl) { "No hay firmware publicado para esta placa ($manifestName)" }
             val m = getJson(manifestUrl)
+            HardwareUpdatePolicy.requireManifest(hardwareModel,
+                m.optString("hardware_model").takeIf { it.isNotBlank() },
+                m.optString("project_name").takeIf { it.isNotBlank() },
+                m.optString("ota_generation").takeIf { it.isNotBlank() },
+                m.getString("version"), m.getInt("size"), m.getString("sha256").lowercase())
             Manifest(
                 version = m.getString("version"),
                 size = m.getInt("size"),
