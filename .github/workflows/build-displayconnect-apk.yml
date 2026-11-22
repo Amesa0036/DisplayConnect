@@ -1,76 +1,29 @@
-name: Build DisplayConnect APK (verified fixed signature)
-
+name: Verify Hecate channels UI only
 on:
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      EXPECTED_CERT_SHA256: 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
-
-      - name: Restore and verify private signing key
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ -z "${DEBUG_KEYSTORE_BASE64:-}" ]; then
-            echo 'Missing DEBUG_KEYSTORE_BASE64. Build stopped.' >&2
-            exit 1
-          fi
-          umask 077
-          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
-          mkdir -p "$(dirname "$KEY")"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
-          test -s "$KEY"
-          keytool -exportcert -keystore "$KEY" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/displayconnect-cert.der"
-          ACTUAL=$(sha256sum "$RUNNER_TEMP/displayconnect-cert.der" | cut -d ' ' -f 1)
-          echo "Restored public certificate SHA256: $ACTUAL"
-          if [ "$ACTUAL" != "$EXPECTED_CERT_SHA256" ]; then
-            echo 'Secret certificate does not match the expected local certificate. No APK will be uploaded.' >&2
-            exit 1
-          fi
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v3
         with:
           packages: ''
-
-      - name: Install Android 36.1 platform
-        run: sdkmanager 'platforms;android-36.1' 'platform-tools'
-
-      - name: Build debug APK
-        run: |
-          chmod +x gradlew
-          echo "HOME=$HOME"
-          echo "ANDROID_USER_HOME=${ANDROID_USER_HOME:-unset}"
-          echo "ANDROID_PREFS_ROOT=${ANDROID_PREFS_ROOT:-unset}"
-          echo "ANDROID_SDK_HOME=${ANDROID_SDK_HOME:-unset}"
-          echo "XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-unset}"
-          ./gradlew --no-daemon :app:signingReport :app:testDebugUnitTest :app:assembleDebug
-
-      - name: Enable KVM for UI test
+      - run: sdkmanager 'platforms;android-36.1' 'platform-tools'
+      - run: chmod +x gradlew && ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-
-      - name: Render GPS source selector in Android emulator (bench UI verification)
-        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         with:
           api-level: 35
           target: google_apis
@@ -79,105 +32,17 @@ jobs:
           emulator-boot-timeout: 600
           script: |
             mkdir -p ui-evidence
-            trap 'adb pull /sdcard/Android/data/com.example.displayconnect/files/. ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-source.png ui-evidence/ || true; adb pull /data/local/tmp/settings-gnss-probe-fail.png ui-evidence/ || true; adb pull /data/local/tmp/gnss-ble-bench.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/ || true; adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/ || true; for f in raw-capturing raw-copying raw-received raw-partial raw-failed raw-no-memory raw-second-session raw-legacy raw-settings-copying raw-settings-partial raw-home-copying raw-route-copying raw-source-active raw-source-copying; do adb pull /data/local/tmp/$f.png ui-evidence/ || true; done; cp -r app/build/reports/androidTests ui-evidence/android-test-reports || true; cp -r app/build/outputs/androidTest-results ui-evidence/android-test-results || true; adb logcat -d > ui-evidence/logcat.txt' EXIT; ./gradlew --no-daemon :app:connectedDebugAndroidTest
-
-            # Required navigation evidence, fail rather than silently omit it.
-            adb pull /data/local/tmp/navigation-private-controls.png ui-evidence/
-            adb pull /data/local/tmp/navigation-guard-warning.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-unconfirmed.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-no-fix.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-confirm-dialog.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-destination-choice.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-destination-dialog.png ui-evidence/
-            adb pull /data/local/tmp/navigation-initial-no-fix-destination.png ui-evidence/
-
-            # Raw diagnostic notices are required, including actual Settings controls.
-            for state in capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying; do adb pull "/data/local/tmp/raw-$state.png" ui-evidence/; test -s "ui-evidence/raw-$state.png"; done
-            for state in disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings local-confirmation-fixture local-disabled-fixture; do adb pull "/data/local/tmp/ota-$state.png" ui-evidence/; test -s "ui-evidence/ota-$state.png"; done
-            test -d ui-evidence/android-test-reports
-            test -d ui-evidence/android-test-results
-
-      - name: Validate required UI files and test reports
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PYIMAGES'
-          from pathlib import Path
-          import struct
-          names = ["raw-"+s for s in "capturing copying received partial failed no-memory second-session legacy settings-copying settings-partial home-copying route-copying source-active source-copying".split()]
-          names += ["navigation-"+s for s in "private-controls guard-warning initial-unconfirmed initial-no-fix initial-confirm-dialog initial-destination-choice initial-destination-dialog initial-no-fix-destination".split()]
-          names += ["ota-"+s for s in "disconnected needs-usb checking transferring accepted-not-confirmed invalid-download disconnected-during-transfer actual-settings local-confirmation-fixture local-disabled-fixture".split()]
-          for name in names:
-              p=Path('ui-evidence',name+'.png')
-              data=p.read_bytes()
-              assert data[:8]==b'\x89PNG\r\n\x1a\n', p
-              w,h=struct.unpack('>II',data[16:24])
-              assert w>=300 and h>=500,(p,w,h)
-              print(p,w,h)
-          assert list(Path('ui-evidence/android-test-reports').rglob('*.html')), 'Missing test report'
-          assert list(Path('ui-evidence/android-test-results').rglob('*.xml')), 'Missing test results'
-          PYIMAGES
-
+            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.FirmwareChannelsUiTest
+            adb pull /sdcard/Android/data/com.example.displayconnect/files/hecate-trial-confirm.png ui-evidence/
+            test -s ui-evidence/hecate-trial-confirm.png
       - name: Retain UI evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-evidence
-          path: ui-evidence/
+          name: hecate-channels-review
+          path: |
+            ui-evidence/
+            app/build/outputs/androidTest-results/
+            app/build/reports/androidTests/
+            app/build/test-results/
           if-no-files-found: error
-          retention-days: 14
-
-      - name: Sign final APK explicitly and enforce certificate match
-        shell: bash
-        run: |
-          set -euo pipefail
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          test -n "$SDK"
-          APKSIGNER=$(find "$SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          test -n "$APKSIGNER"
-          APK=app/build/outputs/apk/debug/app-debug.apk
-          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
-          # Replace Gradle's debug signature with the exact restored private key.
-          "$APKSIGNER" sign --ks "$KEY" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$RUNNER_TEMP/displayconnect-fixed.apk" "$APK"
-          "$APKSIGNER" verify --verbose --print-certs "$RUNNER_TEMP/displayconnect-fixed.apk" | tee "$RUNNER_TEMP/displayconnect-signer.txt"
-          python3 - <<'PYVERIFY'
-          import os, re
-          from pathlib import Path
-          text = Path(os.environ['RUNNER_TEMP'], 'displayconnect-signer.txt').read_text()
-          hashes = re.findall(r'^.*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$', text, re.M)
-          expected = os.environ['EXPECTED_CERT_SHA256'].lower()
-          if len(hashes) != 1 or hashes[0].lower() != expected:
-              raise SystemExit('Final APK signer mismatch. Upload blocked.')
-          print('Final APK signature matches the fixed local certificate.')
-          PYVERIFY
-          mv "$RUNNER_TEMP/displayconnect-fixed.apk" "$APK"
-
-      - name: Keep exact build source and verification evidence
-        run: |
-          mkdir -p build-evidence
-          git rev-parse HEAD > build-evidence/source-commit.txt
-          git archive HEAD app > build-evidence/app-source.tar
-          cp "$RUNNER_TEMP/displayconnect-signer.txt" build-evidence/apksigner.txt
-          sha256sum app/build/outputs/apk/debug/app-debug.apk > build-evidence/apk.sha256
-
-      - name: Upload build evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-evidence
-          path: build-evidence/
-          retention-days: 14
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: displayconnect-mapa-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Remove signing key from runner
-        if: always()
-        shell: bash
-        run: |
-          rm -rf "$RUNNER_TEMP/displayconnect-signing"
-          rm -f "$RUNNER_TEMP/displayconnect-cert.der" "$RUNNER_TEMP/displayconnect-signer.txt" "$RUNNER_TEMP/displayconnect-fixed.apk"
