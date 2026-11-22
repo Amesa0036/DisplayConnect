@@ -77,6 +77,11 @@ fun SettingsScreen(
     val otaBusy by mainViewModel.otaBusy.collectAsState()
     val otaProgress by mainViewModel.otaProgress.collectAsState()
     val otaMessage by mainViewModel.otaMessage.collectAsState()
+    val remoteFirmwarePreview by mainViewModel.remoteFirmwarePreview.collectAsState()
+    remoteFirmwarePreview?.let { preview ->
+        com.example.displayconnect.ui.components.RemoteFirmwareConfirmDialog(preview.version,preview.size,preview.boardName,preview.diagnostic,preview.installed,
+            onCancel={mainViewModel.dismissRemoteFirmware()},onConfirm={mainViewModel.confirmRemoteFirmwareUpdate()})
+    }
     val localFirmwarePreview by mainViewModel.localFirmwarePreview.collectAsState()
     val localFirmwarePicker=rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()){uri->mainViewModel.prepareLocalFirmware(uri)}
     androidx.compose.runtime.DisposableEffect(Unit) { onDispose { mainViewModel.dismissLocalFirmware() } }
@@ -291,14 +296,16 @@ fun SettingsScreen(
             if (section == "preferences") {
             com.example.displayconnect.ui.components.FirmwareUpdateCard(
                 connected = mainUiState.connectionState == ConnectionState.CONNECTED,
-                canUpdate = boardInfo != null && !mainUiState.isNavigating && !imuBusy && !imuRunning && !shadowBusy && !mainViewModel.boardBusy.collectAsState().value,
+                canUpdate = remoteFirmwarePreview == null && localFirmwarePreview == null && boardInfo != null && !mainUiState.isNavigating && !imuBusy && !imuRunning && !shadowBusy && !mainViewModel.boardBusy.collectAsState().value,
                 busy = otaBusy,
                 progress = otaProgress,
                 message = otaMessage,
                 needsUsb = boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G && boardInfo?.otaEnabled != true,
                 allowLocalFile = mainViewModel.localFirmwareToolsEnabled() && boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G,
                 onLocalFile = { localFirmwarePicker.launch(arrayOf("application/octet-stream","*/*")) },
-                onUpdate = { mainViewModel.startFirmwareUpdate() }
+                onUpdate = { mainViewModel.startFirmwareUpdate() },
+                allowTrial = boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G,
+                onTrial = { mainViewModel.startFirmwareUpdate(trial=true) }
             )
 
             }
