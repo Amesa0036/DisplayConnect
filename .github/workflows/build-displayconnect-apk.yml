@@ -18,6 +18,38 @@ jobs:
           packages: ''
       - run: sdkmanager 'platforms;android-36.1' 'platform-tools'
       - run: chmod +x gradlew && ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
+      - name: Restore and verify existing fixed signing key
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
+          mkdir -p "$(dirname "$KEY")"
+          test -n "$DEBUG_KEYSTORE_BASE64"
+          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
+          keytool -exportcert -keystore "$KEY" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/displayconnect-cert.der"
+          test "$(sha256sum "$RUNNER_TEMP/displayconnect-cert.der" | cut -d ' ' -f 1)" = 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645
+      - name: Sign and retain installable APK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          APKSIGNER=$(find "$SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)
+          test -n "$APKSIGNER"
+          mkdir -p signed-apk
+          "$APKSIGNER" sign --ks "$RUNNER_TEMP/displayconnect-signing/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out signed-apk/app-debug.apk app/build/outputs/apk/debug/app-debug.apk
+          "$APKSIGNER" verify --verbose --print-certs signed-apk/app-debug.apk > signed-apk/apksigner.txt
+          grep -Fx 'Signer #1 certificate SHA-256 digest: 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645' signed-apk/apksigner.txt
+          git rev-parse HEAD > signed-apk/source-commit.txt
+          sha256sum signed-apk/app-debug.apk > signed-apk/apk.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rutapalagos-3.16-hecate-channels-fixed
+          path: signed-apk/
+          if-no-files-found: error
+      - name: Remove temporary private key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/displayconnect-signing/debug.keystore"
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
