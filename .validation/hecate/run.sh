@@ -38,7 +38,7 @@ for variant in position ota; do
   adb pull /sdcard/Android/data/com.example.displayconnect/files/ "validation-evidence/$variant/screenshots" > "validation-evidence/$variant/pull.txt" 2>&1
   # Evidence is mandatory: never call a run complete if captures disappeared.
   if [ "$variant" = position ]; then
-    CAPTURES='position-confirm.png position-valid-synthetic.png position-stale.png position-rejected.png'
+    CAPTURES='position-confirm.png position-valid-root.png position-valid-synthetic.png position-stale.png position-rejected.png'
   else
     CAPTURES='ota-notification.png'
   fi
