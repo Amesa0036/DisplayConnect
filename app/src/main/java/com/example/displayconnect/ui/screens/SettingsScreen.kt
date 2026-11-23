@@ -74,6 +74,8 @@ fun SettingsScreen(
     )
 
     val boardInfo by mainViewModel.boardInfo.collectAsState()
+    val otaExportMessage by mainViewModel.otaExportMessage.collectAsState()
+    val otaExport=rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/x-ndjson")) {mainViewModel.exportOtaTrial(it)}
     val otaBusy by mainViewModel.otaBusy.collectAsState()
     val otaProgress by mainViewModel.otaProgress.collectAsState()
     val otaMessage by mainViewModel.otaMessage.collectAsState()
@@ -300,6 +302,8 @@ fun SettingsScreen(
                 busy = otaBusy,
                 progress = otaProgress,
                 message = otaMessage,
+                onExport = {otaExport.launch("hecate-ota.jsonl")},
+                exportMessage = otaExportMessage,
                 needsUsb = boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G && boardInfo?.otaEnabled != true,
                 allowLocalFile = mainViewModel.localFirmwareToolsEnabled() && boardInfo?.hardwareModel == com.example.displayconnect.network.HardwareUpdatePolicy.G,
                 onLocalFile = { localFirmwarePicker.launch(arrayOf("application/octet-stream","*/*")) },
