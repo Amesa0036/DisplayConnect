@@ -95,11 +95,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _gnssProbeMessage = MutableStateFlow<String?>(null)
     val gnssProbeMessage: StateFlow<String?> = _gnssProbeMessage.asStateFlow()
 
-    private val _otaMessage = MutableStateFlow<String?>(null)
+    private val _otaMessage = com.example.displayconnect.network.OtaTransferOwner.message
     val otaMessage: StateFlow<String?> = _otaMessage.asStateFlow()
-    private val _otaBusy = MutableStateFlow(false)
+    private val _otaBusy = com.example.displayconnect.network.OtaTransferOwner.busy
     val otaBusy: StateFlow<Boolean> = _otaBusy.asStateFlow()
-    private val _otaProgress = MutableStateFlow(-1)
+    private val _otaProgress = com.example.displayconnect.network.OtaTransferOwner.progress
     val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
 
     private val _imuMessage = MutableStateFlow("Sin consultar. Captura solo con firmware de prueba compatible.")
@@ -382,7 +382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val (manifest,bin)=remoteFirmware?:return;val expected=remoteBoard?:return;val installed=remoteInstalled?:return
         if(!firmwareIdle())return
         dismissRemoteFirmware();_otaBusy.value=true;_otaProgress.value=-1
-        viewModelScope.launch {
+        launchProtectedOta {
             try {
                 check(_uiState.value.connectionState==com.example.displayconnect.models.ConnectionState.CONNECTED){"Conecta la placa primero"}
                 val live=navClient.boardCommand("board_info").getOrThrow();check(live==expected){"La placa ha cambiado; busca de nuevo"}
@@ -449,7 +449,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED){dismissLocalFirmware();_otaMessage.value="Conecta la placa primero.";return}
         localFirmware=null;localFirmwareBoard=null;_localFirmwarePreview.value=null
         _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value="Comprobando la placa antes de enviar el archivo..."
-        viewModelScope.launch {
+        launchProtectedOta {
             try {
                 val live=navClient.boardCommand("board_info").getOrThrow()
                 check(live==expected && live.hardwareModel==com.example.displayconnect.network.HardwareUpdatePolicy.G){"La placa ha cambiado; el archivo no se enviara"}
@@ -457,12 +457,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 com.example.displayconnect.network.HardwareUpdatePolicy.requireImage(live.hardwareModel,candidate.bytes,candidate.version)
                 check(sha256Hex(candidate.bytes)==candidate.sha256){"El archivo preparado ha cambiado"}
                 _otaMessage.value=com.example.displayconnect.network.OtaMessages.TRANSFERRING
+                check(candidate.version=="0.28.24-175g-ota1-trial-LOCAL" && candidate.sha256=="bc2abb3a30142fc0e22a156b50aef18d4fa5b46aca8d365b2584ce9a28bde88a") { "Esta comprobacion local solo admite la imagen .24 revisada" }
+                val before=navClient.otaBootIdentity()
+                check(before.version==candidate.version) { "Revisa primero la version instalada; no se enviara" }
+                val generation=navClient.connectionGeneration
+                withContext(Dispatchers.IO) {app.otaTrialLog.begin(mapOf("version" to candidate.version,"sha256" to candidate.sha256,"bytes" to candidate.size,
+                    "board_id" to live.id,"model" to live.hardwareModel,"before_slot" to before.slot,"before_version" to before.version,
+                    "app_code" to 20,"android_api" to android.os.Build.VERSION.SDK_INT))}
+                app.otaTrialLog.record("service_protected")
                 val result=navClient.otaUpdate(candidate.bytes,candidate.sha256,live,candidate.version){sent,total->_otaProgress.value=sent*100/total}
-                _otaMessage.value=result.fold(onSuccess={com.example.displayconnect.network.OtaMessages.accepted(candidate.version)},onFailure={com.example.displayconnect.network.OtaMessages.failed(it.message)})
-            } catch(e:kotlinx.coroutines.CancellationException){throw e
-            } catch(e:Exception){_otaMessage.value="Actualizacion no iniciada: ${e.message}"
+                result.getOrThrow()
+                _otaProgress.value=-1
+                _otaMessage.value="Transferido. Esperando reconexion y comprobando arranque; no repitas el envio."
+                val stable=com.example.displayconnect.network.observeOtaBoot(before,candidate.version,generation,
+                    {navClient.connectionGeneration},{navClient.boardInfo.value?.id==live.id},
+                    {navClient.otaBootIdentity()},{navClient.boardCommand("board_info").getOrThrow();Unit},
+                    {boot ->
+                        app.otaTrialLog.record("boot_seen",mapOf("slot" to boot.slot,"version" to boot.version))
+                        _otaMessage.value="Arranque observado. Comprobando estabilidad, espera unos dos minutos."
+                    })
+                app.otaTrialLog.record("boot_stable",mapOf("slot" to stable.slot,"version" to stable.version))
+                _otaMessage.value="Transferencia y arranque estable observados. Guarda el registro OTA para revisar pantalla apagada."
+            } catch(e:kotlinx.coroutines.CancellationException){app.otaTrialLog.record("cancelled");throw e
+            } catch(e:Exception){app.otaTrialLog.record("unconfirmed",mapOf("reason" to e.message));_otaMessage.value="Transferencia o arranque sin confirmar: ${e.message}. No repitas; guarda el registro OTA."
             } finally {_otaBusy.value=false;_otaProgress.value=-1}
         }
+    }
+
+    private val otaExporting=java.util.concurrent.atomic.AtomicBoolean(false)
+    val otaExportMessage=kotlinx.coroutines.flow.MutableStateFlow("")
+    fun exportOtaTrial(uri:Uri?) {
+        if(uri==null || _otaBusy.value || !otaExporting.compareAndSet(false,true))return
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    val bytes=app.otaTrialLog.snapshot()
+                    app.contentResolver.openOutputStream(uri,"wt")?.use {it.write(bytes);it.flush()} ?: error("Destino no disponible")
+                    check(app.contentResolver.openInputStream(uri)?.use{it.readBytes()}?.contentEquals(bytes)==true)
+                    app.otaTrialLog.exported()
+                }
+                otaExportMessage.value="Registro OTA guardado y verificado. No se ha enviado a nadie."
+            } catch(e:Exception) {otaExportMessage.value="Copia OTA no confirmada. El original sigue en la app."}
+            finally {otaExporting.set(false)}
+        }
+    }
+
+    private fun launchProtectedOta(task: suspend () -> Unit) {
+        try { com.example.displayconnect.network.OtaTransferOwner.submit(app, task) }
+        catch(e:Exception) { _otaBusy.value=false;_otaProgress.value=-1;_otaMessage.value="No se ha iniciado la transferencia: ${e.message}" }
     }
 
     private fun sha256Hex(data: ByteArray): String {
@@ -767,6 +809,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnect() {
+        if (_otaBusy.value || navClient.boardBusy.value) { _otaMessage.value="Espera a que termine la transferencia antes de desconectar."; return }
         stopNavigation()
         navClient.disconnect()
     }
