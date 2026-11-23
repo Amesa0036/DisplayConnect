@@ -158,7 +158,7 @@ class NavigationForegroundService : Service() {
                 else {
                     if(app.navClient.boardInfo.value==null) app.navClient.boardCommand("board_info")
                     val reply=app.navClient.gnssRawCommand("status").getOrNull()
-                    if(reply!=null && reply.optBoolean("ok",false) && reply.optBoolean("supported",false) && reply.optBoolean("reader",false)) HecateGnssSource(app.navClient,trace)
+                    if(reply != null && com.example.displayconnect.navigation.HecateNavigationPolicy.supported(reply)) HecateGnssSource(app.navClient,trace)
                     else null
                 }
             })
@@ -166,7 +166,7 @@ class NavigationForegroundService : Service() {
         com.example.displayconnect.utils.TransmissionHub.navigationFailed(
             when (com.example.displayconnect.utils.AppLanguage.language.value) {
                 "en" -> "This board does not offer its own GPS. Select phone GPS or update the board firmware."
-                "es" -> "Esta placa no ofrece GPS propio para navegar. Elige el GPS del movil en ajustes o actualiza la placa."
+                "es" -> "GPS propio no disponible para navegar. Comprueba la conexion y que el firmware no sea solo de diagnostico. No se ha cambiado al GPS del movil."
                 else -> "Esta placa nao oferece GPS proprio. Escolha o GPS do telefone nas definicoes ou atualize a placa."
             })
         stopSelf()
