@@ -30,4 +30,20 @@ class LocalFirmwareTrialPolicyTest {
         rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(t.target,"ota_0")) }
         rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity("old","ota_1")) }
     }
+    @Test fun navOnlyStartsFromPosition() {
+        val t=LocalFirmwareTrialPolicy.Trial("mobile_navigation_once",LocalFirmwareTrialPolicy.NAV_VERSION,LocalFirmwareTrialPolicy.POSITION_VERSION)
+        LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.POSITION_VERSION,"ota_1"))
+        rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.CLOSE_VERSION,"ota_0")) }
+        rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.NAV_VERSION,"ota_0")) }
+    }
+    @Test fun positionRecoveryIsOnlyFromNavOrOriginalTrial() {
+        val t=LocalFirmwareTrialPolicy.Trial("stationary_position_once",LocalFirmwareTrialPolicy.POSITION_VERSION,LocalFirmwareTrialPolicy.CLOSE_VERSION,LocalFirmwareTrialPolicy.NAV_VERSION)
+        LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.NAV_VERSION,"ota_0"))
+        LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.CLOSE_VERSION,"ota_0"))
+        rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity(LocalFirmwareTrialPolicy.POSITION_VERSION,"ota_1")) }
+        rejected { LocalFirmwareTrialPolicy.requireBefore(t,OtaBootIdentity("other","ota_1")) }
+    }
+    @Test fun unsignedNavigationCannotPass() { rejected { LocalFirmwareTrialPolicy.requireCandidate(LocalFirmwareImage(LocalFirmwareTrialPolicy.NAV_VERSION,655360,"0".repeat(64),ByteArray(655360))) } }
+    @Test fun navPayloadCannotChange() { rejected { LocalFirmwareTrialPolicy.requireCandidate(LocalFirmwareImage(LocalFirmwareTrialPolicy.NAV_VERSION,659456,"0".repeat(64),ByteArray(659456))) } }
+
 }
