@@ -19,6 +19,8 @@ fun FirmwareUpdateCard(
     onLocalFile: () -> Unit = {},
     allowTrial:Boolean=false,
     onTrial:()->Unit={},
+    onExport: () -> Unit = {},
+    exportMessage: String = "",
     onUpdate: () -> Unit
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
@@ -43,6 +45,10 @@ fun FirmwareUpdateCard(
                 Text("${progress.coerceIn(0,100)}%", style = MaterialTheme.typography.bodySmall)
             } else if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
             message?.let { Text(it, style = MaterialTheme.typography.bodyMedium) }
+            if(allowLocalFile) {
+                OutlinedButton(onClick=onExport,enabled=!busy){Text("Guardar registro OTA")}
+                if(exportMessage.isNotBlank()) Text(exportMessage,style=MaterialTheme.typography.bodySmall)
+            }
         }
     }
 }
