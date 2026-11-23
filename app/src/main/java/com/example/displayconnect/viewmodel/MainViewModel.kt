@@ -71,13 +71,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
                 if (op == "start") {
-                    com.example.displayconnect.network.GnssBenchSession(
+                    val trace = app.navigationTrace.newSession()
+                    com.example.displayconnect.network.GnssBenchTrace.run(
+                        trace = trace,
                         command = { navClient.gnssRawCommand(it) },
                         monotonic = { android.os.SystemClock.elapsedRealtime() }
-                    ).run { reply ->
-                        _gnssDiagnostic.value = com.example.displayconnect.network.GnssDiagnostic.parse(reply, android.os.SystemClock.elapsedRealtime())
+                    ) { reply ->
+                        val received = android.os.SystemClock.elapsedRealtime()
+                        val decoded = com.example.displayconnect.navigation.HecateGnssSource.decodeFix(reply, received, System.currentTimeMillis())
+                        trace.record("gnss_bench_fix_gate", mapOf("accepted" to (decoded != null)))
+                        _gnssDiagnostic.value = com.example.displayconnect.network.GnssPositionPresentation.parse(reply, received)
                     }
-                } else _gnssDiagnostic.value = navClient.gnssCommand(op).getOrThrow()
+                } else {
+                    val reply = navClient.gnssRawCommand(op).getOrThrow()
+                    _gnssDiagnostic.value = com.example.displayconnect.network.GnssPositionPresentation.parse(reply, android.os.SystemClock.elapsedRealtime())
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 _gnssDiagnostic.value = null
                 _gnssMessage.value = "Prueba cancelada. Se ha intentado parar; consulta estado para confirmar. No reinicies la prueba."
@@ -434,6 +442,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 ensureActive()
                 check(_uiState.value.connectionState==com.example.displayconnect.models.ConnectionState.CONNECTED && navClient.boardInfo.value==board){"La placa ha cambiado durante la lectura"}
+                com.example.displayconnect.network.LocalFirmwareTrialPolicy.requireCandidate(candidate)
                 localFirmware=candidate;localFirmwareBoard=board
                 _localFirmwarePreview.value=LocalFirmwarePreview(candidate.version,candidate.size,candidate.sha256,board.name)
                 _otaMessage.value="Archivo firmado verificado. Falta confirmar el envio; no se ha escrito en la placa."
@@ -456,15 +465,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 com.example.displayconnect.network.HardwareUpdatePolicy.requireOtaTarget(live.hardwareModel,live.otaEnabled)
                 com.example.displayconnect.network.HardwareUpdatePolicy.requireImage(live.hardwareModel,candidate.bytes,candidate.version)
                 check(sha256Hex(candidate.bytes)==candidate.sha256){"El archivo preparado ha cambiado"}
-                _otaMessage.value=com.example.displayconnect.network.OtaMessages.TRANSFERRING
-                check(candidate.version=="0.28.24-175g-ota1-trial-LOCAL" && candidate.sha256=="bc2abb3a30142fc0e22a156b50aef18d4fa5b46aca8d365b2584ce9a28bde88a") { "Esta comprobacion local solo admite la imagen .24 revisada" }
+                val trial=com.example.displayconnect.network.LocalFirmwareTrialPolicy.requireCandidate(candidate)
                 val before=navClient.otaBootIdentity()
-                check(before.version==candidate.version) { "Revisa primero la version instalada; no se enviara" }
+                com.example.displayconnect.network.LocalFirmwareTrialPolicy.requireBefore(trial,before)
                 val generation=navClient.connectionGeneration
                 withContext(Dispatchers.IO) {app.otaTrialLog.begin(mapOf("version" to candidate.version,"sha256" to candidate.sha256,"bytes" to candidate.size,
                     "board_id" to live.id,"model" to live.hardwareModel,"before_slot" to before.slot,"before_version" to before.version,
-                    "app_code" to 20,"android_api" to android.os.Build.VERSION.SDK_INT))}
+                    "app_code" to com.example.displayconnect.BuildConfig.VERSION_CODE,"app_version" to com.example.displayconnect.BuildConfig.VERSION_NAME,
+                    "purpose" to trial.purpose,"android_api" to android.os.Build.VERSION.SDK_INT))}
                 app.otaTrialLog.record("service_protected")
+                _otaMessage.value=com.example.displayconnect.network.OtaMessages.TRANSFERRING
                 val result=navClient.otaUpdate(candidate.bytes,candidate.sha256,live,candidate.version){sent,total->_otaProgress.value=sent*100/total}
                 result.getOrThrow()
                 _otaProgress.value=-1
@@ -477,7 +487,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _otaMessage.value="Arranque observado. Comprobando estabilidad, espera unos dos minutos."
                     })
                 app.otaTrialLog.record("boot_stable",mapOf("slot" to stable.slot,"version" to stable.version))
-                _otaMessage.value="Transferencia y arranque estable observados. Guarda el registro OTA para revisar pantalla apagada."
+                _otaMessage.value="Transferencia y arranque estable observados. Guarda el registro OTA; no inicia ninguna sesion GPS."
             } catch(e:kotlinx.coroutines.CancellationException){app.otaTrialLog.record("cancelled");throw e
             } catch(e:Exception){app.otaTrialLog.record("unconfirmed",mapOf("reason" to e.message));_otaMessage.value="Transferencia o arranque sin confirmar: ${e.message}. No repitas; guarda el registro OTA."
             } finally {_otaBusy.value=false;_otaProgress.value=-1}
