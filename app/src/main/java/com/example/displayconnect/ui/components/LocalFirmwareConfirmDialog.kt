@@ -18,6 +18,7 @@ fun LocalFirmwareConfirmDialog(version:String,size:Int,sha256:String,boardName:S
             Text("Destino: $boardName (Hecate G)")
             Text("Version: $version\nTamano: $size bytes")
             Text("Firma Hecate verificada. SHA-256:\n${sha256.chunked(32).joinToString("\n")}",style=MaterialTheme.typography.bodySmall)
+            if(version=="0.28.25-175g-ota1-fix-LOCAL") Text("Transicion revisada .24 a .25. Solo posicion en parado, hasta tres minutos, sin navegacion. Instalar no inicia la prueba GPS. No pulses Iniciar prueba GPS hasta acordarlo.")
             Text("Al confirmar se escribira en la particion inactiva y la placa se reiniciara. No la apagues. Despues hay que reconectar y comprobar la version; la transferencia por si sola no confirma el arranque.")
             Text("No publica firmware ni modifica el canal normal. Si no quieres escribir ahora, pulsa Cancelar.",style=MaterialTheme.typography.bodySmall)
         }},
