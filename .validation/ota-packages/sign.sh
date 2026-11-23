@@ -3,7 +3,18 @@ set -euo pipefail
 umask 077
 KEYDIR="$RUNNER_TEMP/ota-package-signing"
 mkdir -p "$KEYDIR"
-trap 'rm -rf "$KEYDIR"' EXIT
+cleanup() {
+  status=$?
+  trap - EXIT
+  # Metadata only; no keystore, secrets or APK contents in failure diagnostics.
+  if ! python3 control/.validation/ota-packages/verify.py --diagnose "$KEYDIR/staging" diagnostics/package-inventory.json; then
+    echo 'Could not preserve package inventory' >&2
+    test "$status" -ne 0 || status=1
+  fi
+  rm -rf "$KEYDIR"
+  exit "$status"
+}
+trap cleanup EXIT
 KEY="$KEYDIR/debug.keystore"
 test -n "${DEBUG_KEYSTORE_BASE64:-}"
 printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
@@ -30,4 +41,10 @@ python3 control/.validation/ota-packages/verify.py "$KEYDIR/staging"
 # Publish neither binary unless the whole pair passes verification.
 test ! -e verified-pair
 mkdir verified-pair
-cp "$KEYDIR/staging/"* verified-pair/
+for kind in rescue candidate; do
+  cp "$KEYDIR/staging/$kind.apk" verified-pair/
+  for name in signature.txt manifest.xml files.txt dex.txt; do
+    cp "$KEYDIR/staging/$kind-$name.gz" verified-pair/
+  done
+done
+cp "$KEYDIR/staging/verification.json" "$KEYDIR/staging/SHA256SUMS" verified-pair/
