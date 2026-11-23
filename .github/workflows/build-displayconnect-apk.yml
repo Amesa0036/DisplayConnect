@@ -1,4 +1,4 @@
-name: Hecate dependency resolution diagnostic only
+name: Hecate Android validation only
 on:
   workflow_dispatch:
 permissions:
@@ -10,7 +10,7 @@ jobs:
   validate:
     if: github.ref == 'refs/heads/hecate-android-validation-20261123'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,18 +34,24 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - name: Diagnose configuration and plugin resolution only
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+      - run: sdkmanager 'platforms;android-36.1' 'platform-tools'
+      - name: Enable KVM
         run: |
-          mkdir -p validation-evidence
-          printf '%s\n' 'Diagnostic only: no compilation, APK installation, emulator or tests.' > validation-evidence/scope.txt
-          java -version > validation-evidence/java-version.txt 2>&1
-          chmod +x gradlew
-          set +e
-          ./gradlew --no-daemon --no-configuration-cache --console=plain --no-scan --info --stacktrace help > validation-evidence/resolution-gradle.txt 2>&1
-          result=$?
-          set -e
-          printf 'gradle_exit=%s\n' "$result" > validation-evidence/result.txt
-          exit "$result"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_7
+          emulator-boot-timeout: 600
+          disable-animations: true
+          script: bash .validation/hecate/run.sh
       - name: Check evidence size
         id: evidence
         if: always()
@@ -56,7 +62,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always() && steps.evidence.outputs.safe == 'true'
         with:
-          name: hecate-resolution-diagnostic-evidence
+          name: hecate-android-validation-evidence
           path: validation-evidence/
           retention-days: 1
           if-no-files-found: error
