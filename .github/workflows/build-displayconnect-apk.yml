@@ -1,11 +1,11 @@
-name: Verify Hecate channels UI only
+name: OTA integrated compile and new card pixels only
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  review:
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -16,49 +16,8 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: ''
-      - run: sdkmanager 'platforms;android-36.1' 'platform-tools'
-      - run: chmod +x gradlew && ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
-      - name: Restore and verify existing fixed signing key
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          umask 077
-          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
-          mkdir -p "$(dirname "$KEY")"
-          test -n "$DEBUG_KEYSTORE_BASE64"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
-          keytool -exportcert -keystore "$KEY" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/displayconnect-cert.der"
-          test "$(sha256sum "$RUNNER_TEMP/displayconnect-cert.der" | cut -d ' ' -f 1)" = 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645
-      - name: Sign and retain installable APK
-        run: |
-          set -euo pipefail
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          APKSIGNER=$(find "$SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          test -n "$APKSIGNER"
-          mkdir -p signed-apk
-          "$APKSIGNER" sign --ks "$RUNNER_TEMP/displayconnect-signing/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out signed-apk/app-debug.apk app/build/outputs/apk/debug/app-debug.apk
-          "$APKSIGNER" verify --verbose --print-certs signed-apk/app-debug.apk | tee signed-apk/apksigner.txt
-          python3 - <<'PYVERIFY'
-          import re
-          from pathlib import Path
-          text = Path('signed-apk/apksigner.txt').read_text()
-          hashes = re.findall(r'^.*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$', text, re.M)
-          expected = '82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645'
-          if len(hashes) != 1 or hashes[0].lower() != expected:
-              raise SystemExit('Final APK signer mismatch. Upload blocked.')
-          print('Final APK signature matches the existing fixed certificate.')
-          PYVERIFY
-          git rev-parse HEAD > signed-apk/source-commit.txt
-          sha256sum signed-apk/app-debug.apk > signed-apk/apk.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rutapalagos-3.16-hecate-channels-fixed
-          path: signed-apk/
-          if-no-files-found: error
-      - name: Remove temporary private key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/displayconnect-signing/debug.keystore"
+      - name: Required platform for the unchanged app target
+        run: sdkmanager 'platforms;android-36.1' 'platform-tools'
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -71,19 +30,13 @@ jobs:
           arch: x86_64
           profile: pixel_7
           emulator-boot-timeout: 600
-          script: |
-            mkdir -p ui-evidence
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.FirmwareChannelsUiTest
-            adb pull /data/local/tmp/hecate-trial-confirm.png ui-evidence/
-            test -s ui-evidence/hecate-trial-confirm.png
-      - name: Retain UI evidence
+          disable-animations: true
+          script: bash .validation/ota-review/run.sh
+      - name: Preserve bounded review evidence only
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hecate-channels-review
-          path: |
-            ui-evidence/
-            app/build/outputs/androidTest-results/
-            app/build/reports/androidTests/
-            app/build/test-results/
+          name: ota-integration-compile-pixels
+          path: review-evidence/
           if-no-files-found: error
+          retention-days: 1
