@@ -17,6 +17,37 @@ cleanup_package() {
     return 1
   fi
 }
+check_ota_lock_released() {
+  python3 - "$1" <<'PY_LOCK'
+import re
+
+def ota_lock_active(dump):
+    lines=dump.splitlines()
+    starts=[i for i,line in enumerate(lines) if re.fullmatch(r'Wake Locks: size=\d+',line)]
+    ends=[i for i,line in enumerate(lines) if re.fullmatch(r'Suspend Blockers: size=\d+',line)]
+    if len(starts)!=1 or len(ends)!=1 or starts[0]>=ends[0]:
+        raise ValueError('Missing/ambiguous current wake-lock section')
+    start,end=starts[0],ends[0]
+    rows=[line for line in lines[start+1:end] if line.strip()]
+    if len(rows)!=int(lines[start].split('=')[1]):
+        raise ValueError('Wake-lock count does not match rows')
+    tags=[]
+    for row in rows:
+        match=re.fullmatch(r"  [A-Z_]+ +'(.*)'(?: .*)?",row)
+        if not match:raise ValueError('Unknown current wake-lock row')
+        tags.append(match[1])
+    return 'DisplayConnect::Ota' in tags
+
+import sys
+try:
+    active=ota_lock_active(open(sys.argv[1]).read())
+    print('ota_lock_active='+str(active))
+    sys.exit(1 if active else 0)
+except (ValueError,OSError) as error:
+    print('Cannot verify current wake locks: '+str(error),file=sys.stderr)
+    sys.exit(2)
+PY_LOCK
+}
 # Preserve diagnostics and clean the emulator even when assertions/captures fail.
 finish() {
   local status=$?
@@ -29,7 +60,7 @@ finish() {
   adb shell dumpsys activity services com.example.displayconnect > validation-evidence/final/services-after-stop.txt 2>&1
   adb shell dumpsys power > validation-evidence/final/power-after-stop.txt 2>&1
   if grep -q "ServiceRecord.*com.example.displayconnect.*OtaTransferService" validation-evidence/final/services-after-stop.txt; then status=1; fi
-  if grep -q 'DisplayConnect::Ota' validation-evidence/final/power-after-stop.txt; then status=1; fi
+  check_ota_lock_released validation-evidence/final/power-after-stop.txt > validation-evidence/final/lock-check.txt 2>&1 || status=1
   cleanup_package com.example.displayconnect || status=1
   cleanup_package com.example.displayconnect.test || status=1
   echo "exit=$status" > validation-evidence/final/exit.txt
@@ -77,7 +108,7 @@ for variant in position ota; do
   if [ "$variant" = position ]; then
     CAPTURES='position-confirm.png position-valid-root.png position-valid-synthetic.png position-stale.png position-rejected.png'
   else
-    CAPTURES='ota-notification.png ota-after-test.png ota-diagnostics.txt'
+    CAPTURES='ota-notification.png ota-after-test.png ota-diagnostics.txt ota-blocked-complete.png'
   fi
   for capture in $CAPTURES; do
     test "$(find "validation-evidence/$variant/screenshots" -type f -name "$capture" -size +0c | wc -l)" = 1
@@ -88,8 +119,8 @@ for variant in position ota; do
   if [ "$variant" = ota ]; then
     adb shell am force-stop com.example.displayconnect
     adb shell dumpsys activity services com.example.displayconnect > validation-evidence/ota-after-force-stop.txt
-    adb shell dumpsys power | grep 'DisplayConnect::Ota' > validation-evidence/ota-lock-after-force-stop.txt || true
-    test ! -s validation-evidence/ota-lock-after-force-stop.txt
+    adb shell dumpsys power > validation-evidence/ota-power-after-force-stop.txt
+    check_ota_lock_released validation-evidence/ota-power-after-force-stop.txt > validation-evidence/ota-lock-after-force-stop.txt 2>&1
   fi
   git apply --reverse ".validation/hecate/payload/$variant.patch"
   rm -f "app/src/androidTest/java/com/example/displayconnect/${TEST%%#*}.kt" app/src/debug/java/com/example/displayconnect/ValidationActivity.kt app/src/debug/AndroidManifest.xml
