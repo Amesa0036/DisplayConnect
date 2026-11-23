@@ -137,7 +137,7 @@ fun MainScreen(
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text("GPS propio Hecate · prueba", style = MaterialTheme.typography.titleMedium)
-                        Text("Prueba de enlace en parado, sin navegación. Consulta automática cada segundo durante un máximo de tres minutos. Mantén esta pantalla abierta. No cambia la fuente elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
+                        Text("Prueba de posicion en parado, sin navegacion. Una sola sesion de hasta tres minutos, con consulta cada segundo. Manten esta pantalla abierta y el movil despierto. Al terminar, guarda el registro en Placa y datos > Capturas y diagnostico. No cambia la fuente elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
                         Text(if (!isConnected) "Placa desconectada. Sin lectura actual." else gnss?.display(gnssNow) ?: gnssMessage, style = MaterialTheme.typography.bodySmall)
                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             Button(onClick = { viewModel.gnssCommand("start") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating && (boardInfo == null || boardInfo?.hardwareModel == "waveshare_s3_175g")) { Text("Iniciar prueba GPS") }
