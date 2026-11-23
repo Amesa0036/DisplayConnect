@@ -1,4 +1,4 @@
-name: Prepare position22 and app20-based rescue23 only
+name: Prepare navigation24 and app22-based rescue25 only
 on:
   workflow_dispatch:
 permissions:
@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 426d7109193a3b3e8b98654d268a9c7903a54323
+          ref: 77bee6d4c2484289ed4f6873da4d7b4799355a6a
           path: rescue
           persist-credentials: false
       - uses: actions/setup-java@v4
@@ -31,7 +31,7 @@ jobs:
           packages: ''
       - run: sdkmanager 'platforms;android-36.1' 'platform-tools' 'cmdline-tools;latest'
       - name: Audit pinned trees and prepare rescue version only
-        run: python3 control/.validation/position-packages/prepare.py
+        run: python3 control/.validation/navigation-packages/prepare.py
       - name: Build rescue then candidate, without emulator or test overlay
         run: |
           set -euo pipefail
@@ -42,11 +42,11 @@ jobs:
       - name: Sign, verify and stage both packages atomically
         env:
           DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-        run: bash control/.validation/position-packages/sign.sh
+        run: bash control/.validation/navigation-packages/sign.sh
       - name: Preserve verified pair only
         uses: actions/upload-artifact@v4
         with:
-          name: hecate-position-candidate22-rescue23
+          name: hecate-navigation-candidate24-rescue25
           path: verified-pair/
           if-no-files-found: error
           retention-days: 1
@@ -54,10 +54,10 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: hecate-position-packaging-diagnostic-only
+          name: hecate-navigation-packaging-diagnostic-only
           path: diagnostics/package-inventory.json
           if-no-files-found: warn
           retention-days: 1
       - name: Remove temporary signing key
         if: always()
-        run: rm -rf "$RUNNER_TEMP/position-package-signing"
+        run: rm -rf "$RUNNER_TEMP/navigation-package-signing"
