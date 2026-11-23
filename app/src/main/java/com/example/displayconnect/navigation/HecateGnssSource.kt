@@ -53,7 +53,7 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
                 // supported distingue placa con GNSS; "reader" distingue el
                 // firmware con reader completo del antiguo reserve1 (que solo
                 // hace prueba de longitud y nunca daria posicion en navegacion).
-                if (!reply.optBoolean("supported", false) || !reply.optBoolean("reader", false)) {
+                if (!HecateNavigationPolicy.supported(reply)) {
                     throw IllegalStateException("unsupported_or_unavailable")
                 }
                 if (!reply.optBoolean("running", false)) {
@@ -73,9 +73,10 @@ class HecateGnssSource(private val navClient: BleNavClient, private val trace: N
                 // Also stop when a diagnostic start returned stopped before `started` was set.
                 val stop = if(started || rawCaptureId!=null)
                     kotlinx.coroutines.withTimeoutOrNull(1500) { navClient.gnssRawCommand("stop") } else null
+                val stopConfirmed=stop?.getOrNull()?.let { HecateClosurePolicy.confirmed(it) }==true
                 if(started || rawCaptureId!=null)
-                    trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess))
-                val stopConfirmed=stop?.getOrNull()?.let { it.optBoolean("ok") && !it.optBoolean("running",true) }==true
+                    trace.record("gnss_stop", mapOf("completed" to (stop != null), "success" to stop?.isSuccess,
+                        "clean_confirmed" to stopConfirmed, "reply" to stop?.getOrNull()?.toString()))
                 var copyConfirmed=true
                 rawCaptureId?.let { captureId ->
                     if(stopConfirmed) {
