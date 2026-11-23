@@ -1,14 +1,35 @@
-name: Verify Hecate channels UI only
+name: Hecate Android validation only
 on:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: hecate-android-validation-review
+  cancel-in-progress: false
 jobs:
-  verify:
-    runs-on: ubuntu-latest
+  validate:
+    if: github.ref == 'refs/heads/hecate-android-validation-20261123'
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check approved baseline
+        run: |
+          git fetch --no-tags origin 85a63d3aa61c3411d5663bb1e4ca679310949aca
+          git merge-base --is-ancestor 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD
+          test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | wc -l)" = 8
+          test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | grep -vE '^([.]validation/hecate/|[.]github/workflows/build-displayconnect-apk[.]yml$)' | wc -l)" = 0
+          sha256sum -c <<'APPROVED_HASHES'
+          42eebf017c31e0eaf4d7517c49ad6b207eab0b15c0364f5f76ec73f371fd52ea  .validation/hecate/run.sh
+          99572298864c3215ac93ca4a2015024a4a63ee4f6cab54111cad4ad3f868a726  .validation/hecate/payload/position.patch
+          04e45734f85895a6ed6f7c9e7b112325205edd62481b361649bb3cbb4af5c5c1  .validation/hecate/payload/ota.patch
+          87b549fa1a6c322cd3ffb4dbc851ba2a718cfbe31d845ec7d8141e8c5133ff66  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/PositionValidationTest.kt
+          e8e11b453001697e7f1b393c63e0824660976d0498cb8944b01241992f08cd0b  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/OtaValidationTest.kt
+          982e4e109f44ff0ab5650fa909a37684612d4ae7eac80827ea156d49e3429228  .validation/hecate/overlay/app/src/debug/AndroidManifest.xml
+          e0d65dca692ab93e25f316831b9e42f7f217b9e91b4adc1cb68e5b5aa6336cb0  .validation/hecate/overlay/app/src/debug/java/com/example/displayconnect/ValidationActivity.kt
+          APPROVED_HASHES
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -17,48 +38,6 @@ jobs:
         with:
           packages: ''
       - run: sdkmanager 'platforms;android-36.1' 'platform-tools'
-      - run: chmod +x gradlew && ./gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug
-      - name: Restore and verify existing fixed signing key
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
-          umask 077
-          KEY="$RUNNER_TEMP/displayconnect-signing/debug.keystore"
-          mkdir -p "$(dirname "$KEY")"
-          test -n "$DEBUG_KEYSTORE_BASE64"
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEY"
-          keytool -exportcert -keystore "$KEY" -storepass android -alias androiddebugkey -file "$RUNNER_TEMP/displayconnect-cert.der"
-          test "$(sha256sum "$RUNNER_TEMP/displayconnect-cert.der" | cut -d ' ' -f 1)" = 82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645
-      - name: Sign and retain installable APK
-        run: |
-          set -euo pipefail
-          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          APKSIGNER=$(find "$SDK/build-tools" -type f -name apksigner | sort -V | tail -n 1)
-          test -n "$APKSIGNER"
-          mkdir -p signed-apk
-          "$APKSIGNER" sign --ks "$RUNNER_TEMP/displayconnect-signing/debug.keystore" --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out signed-apk/app-debug.apk app/build/outputs/apk/debug/app-debug.apk
-          "$APKSIGNER" verify --verbose --print-certs signed-apk/app-debug.apk | tee signed-apk/apksigner.txt
-          python3 - <<'PYVERIFY'
-          import re
-          from pathlib import Path
-          text = Path('signed-apk/apksigner.txt').read_text()
-          hashes = re.findall(r'^.*certificate SHA-256 digest:\s*([0-9a-fA-F]{64})\s*$', text, re.M)
-          expected = '82e815ddea89f1295d50e24410c3caa7f8a46b6e49fa767a5ad7795806551645'
-          if len(hashes) != 1 or hashes[0].lower() != expected:
-              raise SystemExit('Final APK signer mismatch. Upload blocked.')
-          print('Final APK signature matches the existing fixed certificate.')
-          PYVERIFY
-          git rev-parse HEAD > signed-apk/source-commit.txt
-          sha256sum signed-apk/app-debug.apk > signed-apk/apk.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: rutapalagos-3.16-hecate-channels-fixed
-          path: signed-apk/
-          if-no-files-found: error
-      - name: Remove temporary private key
-        if: always()
-        run: rm -f "$RUNNER_TEMP/displayconnect-signing/debug.keystore"
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -71,19 +50,19 @@ jobs:
           arch: x86_64
           profile: pixel_7
           emulator-boot-timeout: 600
-          script: |
-            mkdir -p ui-evidence
-            ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.FirmwareChannelsUiTest
-            adb pull /data/local/tmp/hecate-trial-confirm.png ui-evidence/
-            test -s ui-evidence/hecate-trial-confirm.png
-      - name: Retain UI evidence
+          disable-animations: true
+          script: bash .validation/hecate/run.sh
+      - name: Check evidence size
+        id: evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        run: |
+          mkdir -p validation-evidence
+          test "$(du -sb validation-evidence | cut -f1)" -le 10485760
+          echo 'safe=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.evidence.outputs.safe == 'true'
         with:
-          name: hecate-channels-review
-          path: |
-            ui-evidence/
-            app/build/outputs/androidTest-results/
-            app/build/reports/androidTests/
-            app/build/test-results/
+          name: hecate-android-validation-evidence
+          path: validation-evidence/
+          retention-days: 1
           if-no-files-found: error
