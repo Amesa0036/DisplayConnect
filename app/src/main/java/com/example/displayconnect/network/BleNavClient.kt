@@ -47,7 +47,7 @@ import java.util.concurrent.atomic.AtomicReference
  * Framing: each JSON message ends with '\n'; large payloads are chunked to fit MTU.
  */
 @SuppressLint("MissingPermission")
-class BleNavClient(context: Context) {
+class BleNavClient(context: Context, private val otaLog: OtaTrialLog? = null) {
 
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -102,7 +102,30 @@ class BleNavClient(context: Context) {
     private var shadowGpsJob: Job? = null
     private val shadowProtected = AtomicBoolean(false)
 
+    @Volatile var connectionGeneration: Long = 0; private set
+    private val bootReply = OtaVersionReply()
+    suspend fun otaBootIdentity(): OtaBootIdentity = boardMutex.withLock {
+        check(!otaActive.get()) { "Transferencia activa" }
+        val connection = gatt ?: error("Placa desconectada")
+        val characteristic = rxCharacteristic ?: error("Placa no preparada")
+        check(_connectionState.value == ConnectionState.CONNECTED)
+        val reply = bootReply.begin(connection)
+        try {
+            check(writeMutex.withLock { writeInChunks(connection, characteristic, "\nOTA:VERSION\n".toByteArray()) })
+            val result = withTimeoutOrNull(5000) { reply.await() } ?: error("Sin respuesta de version/slot")
+            check(connection === gatt) { "Conexion cambiada" }
+            result
+        } catch(e:Exception) {
+            // A late uncorrelated legacy VERSION reply must not satisfy the next query.
+            connection.disconnect()
+            throw e
+        } finally { bootReply.finish(reply) }
+    }
+
     private fun clearBoardSession() {
+        connectionGeneration++
+        bootReply.disconnected()
+        otaLog?.record("disconnected")
         shadowGpsSource.clear(); shadowGpsJob?.cancel(); shadowGpsJob = null; shadowProtected.set(false)
         _boardInfo.value = null
         synchronized(this) { gnssReply?.cancel(); gnssReply = null; gnssReplyId = null }
@@ -342,6 +365,7 @@ class BleNavClient(context: Context) {
             }
         }
         for (line in boardDecoder.feed(bytes)) {
+            if (bootReply.receive(connection,line)) continue
             if (otaActive.get() && line.startsWith("OTA:")) { otaLines.trySend(line); continue }
             try {
                 val json = JSONObject(line)
@@ -422,8 +446,10 @@ class BleNavClient(context: Context) {
         while (otaLines.tryReceive().isSuccess) { }
         try {
             boardDecoder.reset()
+            otaLog?.record("begin", mapOf("bytes" to bin.size))
             val ready = otaExchange(connection, characteristic,
                 "OTA:BEGIN ${bin.size} $sha256Hex", 120_000)
+            otaLog?.record("ready_reply", mapOf("reply" to ready))
             if (ready == "OTA:ERR timeout_app")
                 return Result.failure(Exception("Timeout esperando OTA:READY (la placa tarda en borrar la flash)"))
             if (ready != "OTA:READY") return otaFailure(ready)
@@ -445,6 +471,7 @@ class BleNavClient(context: Context) {
                     val ack = nextOtaLine(30_000)
                     if (ack == "OTA:ERR timeout_app")
                         return Result.failure(Exception("Timeout esperando OTA:ACK (enviados $sent de ${bin.size} bytes)"))
+                    otaLog?.record("ack",mapOf("sent" to sent,"reply" to ack))
                     try { HardwareUpdatePolicy.requireAck(ack, sent) }
                     catch (e: IllegalArgumentException) { return Result.failure(e) }
                 }
@@ -452,7 +479,7 @@ class BleNavClient(context: Context) {
             val deadline = SystemClock.elapsedRealtime() + 60_000
             while (SystemClock.elapsedRealtime() < deadline) {
                 val line = nextOtaLine(deadline - SystemClock.elapsedRealtime())
-                if (line == "OTA:OK") { accepted = true; return Result.success(Unit) }
+                if (line == "OTA:OK") { otaLog?.record("accepted"); accepted = true; return Result.success(Unit) }
                 if (line == "OTA:ERR timeout_app")
                     return Result.failure(Exception("Timeout esperando OTA:OK tras la verificacion"))
                 if (line.startsWith("OTA:ERR")) return otaFailure(line)
@@ -810,7 +837,8 @@ class BleNavClient(context: Context) {
             }
             _connectionState.value = ConnectionState.CONNECTED
             startHeartbeat()
-            scope.launch { boardCommand("board_info") }
+            otaLog?.record("reconnected")
+            scope.launch { val result=boardCommand("board_info"); otaLog?.record("board_info",mapOf("ok" to result.isSuccess)) }
         }
 
         @Deprecated("Android legacy callback")
