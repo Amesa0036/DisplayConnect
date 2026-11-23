@@ -37,6 +37,7 @@ jobs:
           set -euo pipefail
           for kind in rescue candidate; do
             (cd "$kind" && chmod +x gradlew && ./gradlew --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:assembleDebug) > "$RUNNER_TEMP/$kind-build.txt" 2>&1 || { tail -n 80 "$RUNNER_TEMP/$kind-build.txt"; exit 1; }
+            tail -n 8 "$RUNNER_TEMP/$kind-build.txt"
           done
       - name: Sign, verify and stage both packages atomically
         env:
@@ -48,6 +49,14 @@ jobs:
           name: hecate-ota-candidate20-rescue21-fixed
           path: verified-pair/
           if-no-files-found: error
+          retention-days: 1
+      - name: Preserve small failure inventory only
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hecate-ota-packaging-diagnostic-only
+          path: diagnostics/package-inventory.json
+          if-no-files-found: warn
           retention-days: 1
       - name: Remove temporary signing key
         if: always()
