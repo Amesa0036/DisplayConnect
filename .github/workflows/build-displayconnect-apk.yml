@@ -22,11 +22,11 @@ jobs:
           test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | wc -l)" = 8
           test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | grep -vE '^([.]validation/hecate/|[.]github/workflows/build-displayconnect-apk[.]yml$)' | wc -l)" = 0
           sha256sum -c <<'APPROVED_HASHES'
-          2378e8e364eafe9a0981ca3ad3cb620012fdd178c76d7fb09036652271f6be6c  .validation/hecate/run.sh
+          223dd2f32839714a413700f387ff6e258fd06a2224806002d5a5912f3b9cdb04  .validation/hecate/run.sh
           99572298864c3215ac93ca4a2015024a4a63ee4f6cab54111cad4ad3f868a726  .validation/hecate/payload/position.patch
           04e45734f85895a6ed6f7c9e7b112325205edd62481b361649bb3cbb4af5c5c1  .validation/hecate/payload/ota.patch
-          87b549fa1a6c322cd3ffb4dbc851ba2a718cfbe31d845ec7d8141e8c5133ff66  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/PositionValidationTest.kt
-          e8e11b453001697e7f1b393c63e0824660976d0498cb8944b01241992f08cd0b  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/OtaValidationTest.kt
+          274b311581b9e1f38bfdafb6c9bc4475fb5b105eec8e2e3a63783ec383b94efe  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/PositionValidationTest.kt
+          a8be1cf488954a2778dcf743b49c35f86cbda5934140a423c97754d5f0bfb4db  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/OtaValidationTest.kt
           982e4e109f44ff0ab5650fa909a37684612d4ae7eac80827ea156d49e3429228  .validation/hecate/overlay/app/src/debug/AndroidManifest.xml
           e0d65dca692ab93e25f316831b9e42f7f217b9e91b4adc1cb68e5b5aa6336cb0  .validation/hecate/overlay/app/src/debug/java/com/example/displayconnect/ValidationActivity.kt
           APPROVED_HASHES
