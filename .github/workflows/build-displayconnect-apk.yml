@@ -1,14 +1,27 @@
-name: OTA integrated compile and new card pixels only
+name: Prepare OTA candidate and rescue only
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
-  review:
+  packages:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 426d7109193a3b3e8b98654d268a9c7903a54323
+          path: candidate
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 85a63d3aa61c3411d5663bb1e4ca679310949aca
+          path: rescue
+          persist-credentials: false
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -16,27 +29,26 @@ jobs:
       - uses: android-actions/setup-android@v3
         with:
           packages: ''
-      - name: Required platform for the unchanged app target
-        run: sdkmanager 'platforms;android-36.1' 'platform-tools'
-      - name: Enable KVM
+      - run: sdkmanager 'platforms;android-36.1' 'platform-tools' 'cmdline-tools;latest'
+      - name: Audit pinned trees and prepare rescue version only
+        run: python3 control/.validation/ota-packages/prepare.py
+      - name: Build rescue then candidate, without emulator or test overlay
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
-        with:
-          api-level: 35
-          target: google_apis
-          arch: x86_64
-          profile: pixel_7
-          emulator-boot-timeout: 600
-          disable-animations: true
-          script: bash .validation/ota-review/run.sh
-      - name: Preserve bounded review evidence only
-        if: always()
+          set -euo pipefail
+          for kind in rescue candidate; do
+            (cd "$kind" && chmod +x gradlew && ./gradlew --no-daemon --no-configuration-cache :app:testDebugUnitTest :app:assembleDebug) > "$RUNNER_TEMP/$kind-build.txt" 2>&1 || { tail -n 80 "$RUNNER_TEMP/$kind-build.txt"; exit 1; }
+          done
+      - name: Sign, verify and stage both packages atomically
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: bash control/.validation/ota-packages/sign.sh
+      - name: Preserve verified pair only
         uses: actions/upload-artifact@v4
         with:
-          name: ota-integration-compile-pixels
-          path: review-evidence/
+          name: hecate-ota-candidate20-rescue21-fixed
+          path: verified-pair/
           if-no-files-found: error
           retention-days: 1
+      - name: Remove temporary signing key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/ota-package-signing"
