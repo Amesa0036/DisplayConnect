@@ -17,6 +17,25 @@ cleanup_package() {
     return 1
   fi
 }
+# Preserve diagnostics and clean the emulator even when assertions/captures fail.
+finish() {
+  local status=$?
+  trap - EXIT
+  set +e
+  mkdir -p validation-evidence/final
+  adb logcat -d -t 600 > validation-evidence/final/logcat.txt 2>&1
+  adb shell dumpsys activity services com.example.displayconnect > validation-evidence/final/services-before-stop.txt 2>&1
+  adb shell am force-stop com.example.displayconnect || status=1
+  adb shell dumpsys activity services com.example.displayconnect > validation-evidence/final/services-after-stop.txt 2>&1
+  adb shell dumpsys power > validation-evidence/final/power-after-stop.txt 2>&1
+  if grep -q "ServiceRecord.*com.example.displayconnect.*OtaTransferService" validation-evidence/final/services-after-stop.txt; then status=1; fi
+  if grep -q 'DisplayConnect::Ota' validation-evidence/final/power-after-stop.txt; then status=1; fi
+  cleanup_package com.example.displayconnect || status=1
+  cleanup_package com.example.displayconnect.test || status=1
+  echo "exit=$status" > validation-evidence/final/exit.txt
+  exit "$status"
+}
+trap finish EXIT
 chmod +x gradlew
 for variant in position ota; do
   echo "variant=$variant phase=begin" | tee -a validation-evidence/phases.txt
@@ -28,19 +47,37 @@ for variant in position ota; do
   cp ".validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/$TEST.kt" app/src/androidTest/java/com/example/displayconnect/
   adb shell wm size 720x1280
   adb shell wm density 320
+  if [ "$variant" = ota ]; then
+    TEST="$TEST#syntheticTaskSurvivesScreenOffAndActivityRecreation"
+  fi
   set +e
   ./gradlew --no-daemon :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=com.example.displayconnect.$TEST" -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true > "validation-evidence/$variant-gradle.txt" 2>&1
   result=$?
   set -e
+  if [ "$variant" = ota ] && [ "$result" = 0 ]; then
+    # Permission revocation can kill the app. Do it only between instrumentations.
+    adb shell pm revoke com.example.displayconnect android.permission.POST_NOTIFICATIONS
+    adb shell dumpsys package com.example.displayconnect > validation-evidence/ota-permission-before-blocked.txt
+    set +e
+    adb shell am instrument -w -r -e class 'com.example.displayconnect.OtaValidationTest#blockedNotificationAndSyntheticFailureReleaseOwnership' com.example.displayconnect.test/androidx.test.runner.AndroidJUnitRunner > validation-evidence/ota-blocked-instrumentation.txt 2>&1
+    result=$?
+    set -e
+    # am instrument may exit zero even when a test fails. Require the test runner verdict.
+    if ! grep -Eq '^OK \(1 test\)' validation-evidence/ota-blocked-instrumentation.txt; then result=1; fi
+    if grep -Eq 'FAILURES|INSTRUMENTATION_FAILED|Process crashed' validation-evidence/ota-blocked-instrumentation.txt; then result=1; fi
+    adb shell pm grant com.example.displayconnect android.permission.POST_NOTIFICATIONS
+  fi
   mkdir -p "validation-evidence/$variant"
   if [ -d app/build/outputs/androidTest-results/connected ]; then cp -R app/build/outputs/androidTest-results/connected "validation-evidence/$variant/results"; fi
   adb shell pm path com.example.displayconnect > "validation-evidence/$variant/package-after-tests.txt"
+  adb logcat -d -t 600 > "validation-evidence/$variant/logcat.txt" 2>&1
+  adb shell dumpsys power > "validation-evidence/$variant/power-after-tests.txt" 2>&1
   adb pull /sdcard/Android/data/com.example.displayconnect/files/ "validation-evidence/$variant/screenshots" > "validation-evidence/$variant/pull.txt" 2>&1
   # Evidence is mandatory: never call a run complete if captures disappeared.
   if [ "$variant" = position ]; then
     CAPTURES='position-confirm.png position-valid-root.png position-valid-synthetic.png position-stale.png position-rejected.png'
   else
-    CAPTURES='ota-notification.png'
+    CAPTURES='ota-notification.png ota-after-test.png ota-diagnostics.txt'
   fi
   for capture in $CAPTURES; do
     test "$(find "validation-evidence/$variant/screenshots" -type f -name "$capture" -size +0c | wc -l)" = 1
@@ -55,7 +92,7 @@ for variant in position ota; do
     test ! -s validation-evidence/ota-lock-after-force-stop.txt
   fi
   git apply --reverse ".validation/hecate/payload/$variant.patch"
-  rm -f "app/src/androidTest/java/com/example/displayconnect/$TEST.kt" app/src/debug/java/com/example/displayconnect/ValidationActivity.kt app/src/debug/AndroidManifest.xml
+  rm -f "app/src/androidTest/java/com/example/displayconnect/${TEST%%#*}.kt" app/src/debug/java/com/example/displayconnect/ValidationActivity.kt app/src/debug/AndroidManifest.xml
   cleanup_package com.example.displayconnect
   cleanup_package com.example.displayconnect.test
   echo "variant=$variant phase=cleaned" | tee -a validation-evidence/phases.txt
