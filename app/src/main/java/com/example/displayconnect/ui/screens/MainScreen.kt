@@ -144,7 +144,7 @@ fun MainScreen(
                             OutlinedButton(onClick = { viewModel.gnssCommand("status") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating) { Text("Consultar estado GPS") }
                             OutlinedButton(onClick = { viewModel.gnssCommand("stop") }, enabled = isConnected && !uiState.isNavigating) { Text("Parar prueba GPS") }
                         }
-                        Text("Un solo inicio, sin reintentos automáticos. Al salir, ir al fondo o pulsar Parar se intenta detener la lectura. El firmware también limita la sesión y la detiene al desconectar o caducar las consultas. No se reconfigura el módulo. Requiere firmware compatible.", style = MaterialTheme.typography.bodySmall)
+                        Text("Un solo inicio, sin reintentos automáticos. Al salir, ir al fondo o pulsar Parar se intenta detener la lectura. Esta prueba se limita desde la app. La placa detiene la lectura al desconectar o caducar las consultas. No se reconfigura el módulo. Requiere firmware compatible.", style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
