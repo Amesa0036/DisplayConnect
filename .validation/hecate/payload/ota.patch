@@ -1,0 +1,183 @@
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -8,6 +8,7 @@
+     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
++    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+     <uses-permission android:name="android.permission.WAKE_LOCK" />
+ 
+@@ -58,6 +59,8 @@
+             android:exported="false"
+             android:theme="@style/Theme.DisplayConnect" />
+ 
++        <service android:name=".network.OtaTransferService" android:exported="false" android:foregroundServiceType="connectedDevice" />
++
+         <service
+             android:name=".navigation.NavigationForegroundService"
+             android:exported="false"
+--- a/app/src/main/java/com/example/displayconnect/viewmodel/MainViewModel.kt
++++ b/app/src/main/java/com/example/displayconnect/viewmodel/MainViewModel.kt
+@@ -95,11 +95,11 @@
+     private val _gnssProbeMessage = MutableStateFlow<String?>(null)
+     val gnssProbeMessage: StateFlow<String?> = _gnssProbeMessage.asStateFlow()
+ 
+-    private val _otaMessage = MutableStateFlow<String?>(null)
++    private val _otaMessage = com.example.displayconnect.network.OtaTransferOwner.message
+     val otaMessage: StateFlow<String?> = _otaMessage.asStateFlow()
+-    private val _otaBusy = MutableStateFlow(false)
++    private val _otaBusy = com.example.displayconnect.network.OtaTransferOwner.busy
+     val otaBusy: StateFlow<Boolean> = _otaBusy.asStateFlow()
+-    private val _otaProgress = MutableStateFlow(-1)
++    private val _otaProgress = com.example.displayconnect.network.OtaTransferOwner.progress
+     val otaProgress: StateFlow<Int> = _otaProgress.asStateFlow()
+ 
+     private val _imuMessage = MutableStateFlow("Sin consultar. Captura solo con firmware de prueba compatible.")
+@@ -382,7 +382,7 @@
+         val (manifest,bin)=remoteFirmware?:return;val expected=remoteBoard?:return;val installed=remoteInstalled?:return
+         if(!firmwareIdle())return
+         dismissRemoteFirmware();_otaBusy.value=true;_otaProgress.value=-1
+-        viewModelScope.launch {
++        launchProtectedOta {
+             try {
+                 check(_uiState.value.connectionState==com.example.displayconnect.models.ConnectionState.CONNECTED){"Conecta la placa primero"}
+                 val live=navClient.boardCommand("board_info").getOrThrow();check(live==expected){"La placa ha cambiado; busca de nuevo"}
+@@ -449,7 +449,7 @@
+         if(_uiState.value.connectionState!=com.example.displayconnect.models.ConnectionState.CONNECTED){dismissLocalFirmware();_otaMessage.value="Conecta la placa primero.";return}
+         localFirmware=null;localFirmwareBoard=null;_localFirmwarePreview.value=null
+         _otaBusy.value=true;_otaProgress.value=-1;_otaMessage.value="Comprobando la placa antes de enviar el archivo..."
+-        viewModelScope.launch {
++        launchProtectedOta {
+             try {
+                 val live=navClient.boardCommand("board_info").getOrThrow()
+                 check(live==expected && live.hardwareModel==com.example.displayconnect.network.HardwareUpdatePolicy.G){"La placa ha cambiado; el archivo no se enviara"}
+@@ -463,6 +463,11 @@
+             } catch(e:Exception){_otaMessage.value="Actualizacion no iniciada: ${e.message}"
+             } finally {_otaBusy.value=false;_otaProgress.value=-1}
+         }
++    }
++
++    private fun launchProtectedOta(task: suspend () -> Unit) {
++        try { com.example.displayconnect.network.OtaTransferOwner.submit(app, task) }
++        catch(e:Exception) { _otaBusy.value=false;_otaProgress.value=-1;_otaMessage.value="No se ha iniciado la transferencia: ${e.message}" }
+     }
+ 
+     private fun sha256Hex(data: ByteArray): String {
+@@ -767,6 +772,7 @@
+     }
+ 
+     fun disconnect() {
++        if (_otaBusy.value || navClient.boardBusy.value) { _otaMessage.value="Espera a que termine la transferencia antes de desconectar."; return }
+         stopNavigation()
+         navClient.disconnect()
+     }
+--- /dev/null
++++ b/app/src/main/java/com/example/displayconnect/network/OtaTransferService.kt
+@@ -0,0 +1,106 @@
++package com.example.displayconnect.network
++
++import android.app.*
++import android.content.*
++import android.content.pm.ServiceInfo
++import android.os.*
++import androidx.core.app.NotificationCompat
++import androidx.core.content.ContextCompat
++import com.example.displayconnect.MainActivity
++import com.example.displayconnect.R
++import kotlinx.coroutines.*
++import kotlinx.coroutines.flow.MutableStateFlow
++
++/** Process-local, single-use handoff. Never persists firmware or restarts a failed transfer. */
++object OtaTransferOwner {
++    val busy = MutableStateFlow(false)
++    val progress = MutableStateFlow(-1)
++    val message = MutableStateFlow<String?>(null)
++    private var pending: (suspend () -> Unit)? = null
++    private val handoffScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
++    private var startup: Job? = null
++    @Synchronized fun submit(context: Context, task: suspend () -> Unit) {
++        check(pending == null && !OtaTransferService.running) { "Ya hay una transferencia" }
++        pending = task
++        try {
++            ContextCompat.startForegroundService(context, Intent(context, OtaTransferService::class.java))
++            startup = handoffScope.launch {
++                delay(10_000)
++                expirePending()
++            }
++        } catch (e: Exception) { pending = null; busy.value = false; progress.value = -1; throw e }
++    }
++    @Synchronized private fun expirePending() {
++        if (pending != null) {
++            pending = null; busy.value = false; progress.value = -1
++            message.value = "No se pudo iniciar el servicio de transferencia. No se ha enviado firmware; no hay reintento automatico."
++        }
++        startup = null
++    }
++    @Synchronized fun take(): (suspend () -> Unit)? {
++        startup?.cancel(); startup = null
++        return pending.also { pending = null }
++    }
++}
++
++/** Owns the approved OTA task while the Activity is stopped or recreated. No automatic retry. */
++class OtaTransferService : Service() {
++    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
++    private var lock: PowerManager.WakeLock? = null
++    private var task: Job? = null
++    private var ownsTransfer = false
++    override fun onBind(intent: Intent?): IBinder? = null
++    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
++        if (running) return START_NOT_STICKY
++        val block = OtaTransferOwner.take() ?: run { stopSelf(); return START_NOT_STICKY }
++        running = true
++        ownsTransfer = true
++        try {
++            val manager = getSystemService(NotificationManager::class.java)
++            if (Build.VERSION.SDK_INT >= 26) manager.createNotificationChannel(NotificationChannel(CHANNEL, "Actualizacion de placa", NotificationManager.IMPORTANCE_LOW))
++            if (Build.VERSION.SDK_INT >= 29) startForeground(ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
++            else startForeground(ID, notification())
++            lock = (getSystemService(POWER_SERVICE) as PowerManager).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "DisplayConnect::Ota").apply {
++                setReferenceCounted(false); acquire(31 * 60 * 1000L)
++            }
++            task = scope.launch {
++                val updates = launch { OtaTransferOwner.progress.collect { manager.notify(ID, notification()) } }
++                try { withTimeout(30 * 60 * 1000L) { block() } }
++                catch (e: CancellationException) { OtaTransferOwner.message.value = "Transferencia interrumpida. Reconecta y comprueba la version; no se reanuda automaticamente."; throw e }
++                catch (e: Exception) { OtaTransferOwner.message.value = "Transferencia no completada: ${e.message}" }
++                finally { updates.cancel() }
++            }.also { job -> job.invokeOnCompletion { finish(); stopSelf() } }
++        } catch (e: Exception) {
++            OtaTransferOwner.message.value = "No se pudo proteger la transferencia: ${e.message}. No se ha enviado firmware."
++            finish(); stopSelf()
++        }
++        return START_NOT_STICKY
++    }
++    private fun notification(): Notification {
++        val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
++        val p = OtaTransferOwner.progress.value
++        return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(R.drawable.ic_launcher_foreground)
++            .setContentTitle("Actualizando la placa")
++            .setContentText("Puedes apagar la pantalla. No apagues la placa ni fuerces el cierre de la app.")
++            .setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true)
++            .setProgress(100, p.coerceIn(0, 100), p < 0).build()
++    }
++    private fun finish() {
++        if (!ownsTransfer) return
++        ownsTransfer = false
++        lock?.let { if (it.isHeld) it.release() }; lock = null
++        OtaTransferOwner.busy.value = false; OtaTransferOwner.progress.value = -1
++        running = false; stopForeground(STOP_FOREGROUND_REMOVE)
++    }
++    override fun onDestroy() {
++        scope.cancel()
++        // Keep ownership until the old task's finally blocks have finished.
++        // Otherwise their UI cleanup can clear a replacement transfer's busy state.
++        if (task?.isCompleted != false) finish()
++        super.onDestroy()
++    }
++    companion object { @Volatile var running = false; private set
++        private const val CHANNEL = "ota-transfer"
++        private const val ID = 4501
++    }
++}
