@@ -12,13 +12,63 @@ import android.graphics.Bitmap
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
+import org.junit.After
+import android.app.NotificationManager
+import android.app.AppOpsManager
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
 class OtaValidationTest {
  @get:Rule val activity=ActivityScenarioRule(ValidationActivity::class.java)
  private val instrumentation get()=InstrumentationRegistry.getInstrumentation()
- private fun shell(command:String)=instrumentation.uiAutomation.executeShellCommand(command).let { fd -> android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).use { it.readBytes().toString(Charsets.UTF_8) } }
+ private val evidenceDir get()=requireNotNull(instrumentation.targetContext.getExternalFilesDir(null))
+ private fun record(text:String) { File(evidenceDir,"ota-diagnostics.txt").appendText("${android.os.SystemClock.elapsedRealtime()} $text\n") }
+ private fun shell(command:String):String {
+  // Runtime.exec does not parse shell quoting: feed a fixed script to sh stdin.
+  val fds=instrumentation.uiAutomation.executeShellCommandRwe("sh")
+  android.os.ParcelFileDescriptor.AutoCloseOutputStream(fds[1]).bufferedWriter().use {
+   it.write(command+"\nrc=\$?\nprintf '\\n__HECATE_EXIT__%s\\n' \"\$rc\"\nexit \$rc\n")
+  }
+  val executor=Executors.newFixedThreadPool(2)
+  try {
+   val stdout=executor.submit<String> { android.os.ParcelFileDescriptor.AutoCloseInputStream(fds[0]).use { it.readBytes().toString(Charsets.UTF_8) } }
+   val stderr=executor.submit<String> { android.os.ParcelFileDescriptor.AutoCloseInputStream(fds[2]).use { it.readBytes().toString(Charsets.UTF_8) } }
+   val out=stdout.get(10,TimeUnit.SECONDS);val err=stderr.get(10,TimeUnit.SECONDS)
+   record("command=$command\nstdout=$out\nstderr=$err")
+   val exit=Regex("__HECATE_EXIT__(\\d+)").findAll(out).lastOrNull()?.groupValues?.get(1)?.toInt()
+   check(exit==0) { "Shell failed or missing exit status: $command (exit=$exit)" }
+   return out.substringBeforeLast("__HECATE_EXIT__")
+  } catch (failure:Throwable) { record("commandFailure=$command error=$failure");throw failure
+  } finally { fds.forEach { runCatching { it.close() } };executor.shutdownNow() }
+ }
+ private fun notificationState(label:String):Boolean {
+  val context=instrumentation.targetContext
+  val enabled=context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
+  val op=context.getSystemService(AppOpsManager::class.java).unsafeCheckOpNoThrow("android:post_notification",context.applicationInfo.uid,context.packageName)
+  record("$label notificationsEnabled=$enabled appOpMode=$op running=${OtaTransferService.running} busy=${OtaTransferOwner.busy.value}")
+  return enabled
+ }
+ private fun notificationVisible():Boolean {
+  val automation=instrumentation.uiAutomation
+  val info=automation.serviceInfo
+  info.flags=info.flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+  automation.serviceInfo=info
+  return automation.windows.any { treeHasText(it.root,"Actualizando la placa") } || treeHasText(automation.rootInActiveWindow,"Actualizando la placa")
+ }
+ private fun failureEvidence(label:String) {
+  runCatching { screenshot("ota-$label-failure.png") };runCatching { notificationState("$label-failure") };runCatching { shell("dumpsys power") }
+ }
+ private fun treeHasText(node:android.view.accessibility.AccessibilityNodeInfo?,text:String):Boolean {
+  if(node==null)return false
+  if(node.text?.contains(text)==true)return true
+  for(index in 0 until node.childCount)if(treeHasText(node.getChild(index),text))return true
+  return false
+ }
+ @After fun diagnostics() {
+  runCatching { record("afterTest lifecycle=${activity.scenario.state}");notificationState("afterTest");shell("dumpsys power");screenshot("ota-after-test.png") }.onFailure { record("diagnosticFailure=$it") }
+ }
  private fun waitFor(limit:Long=15000,condition:()->Boolean) { val end=android.os.SystemClock.elapsedRealtime()+limit;while(!condition()&&android.os.SystemClock.elapsedRealtime()<end)Thread.sleep(100);assertTrue(condition()) }
  private fun screenshot(name:String) { File(instrumentation.targetContext.getExternalFilesDir(null),name).outputStream().use { check(requireNotNull(instrumentation.uiAutomation.takeScreenshot()).compress(Bitmap.CompressFormat.PNG,100,it)) } }
  @Test fun syntheticTaskSurvivesScreenOffAndActivityRecreation() {
@@ -26,8 +76,8 @@ class OtaValidationTest {
   val finishGate=CompletableDeferred<Unit>()
   var taskId=-1
   try {
-   shell("appops set com.example.displayconnect POST_NOTIFICATION allow")
    shell("pm grant com.example.displayconnect android.permission.POST_NOTIFICATIONS")
+   waitFor { notificationState("success-before") };assertTrue("Notifications not enabled before success test",notificationState("success-verified"))
    shell("pm grant com.example.displayconnect android.permission.BLUETOOTH_CONNECT")
    activity.scenario.onActivity { taskId=it.taskId;OtaTransferOwner.busy.value=true;OtaTransferOwner.submit(it){repeat(100){index->if(index==90)finishGate.await();ticks.incrementAndGet();delay(100)} } }
    waitFor { OtaTransferService.running&&ticks.get()>0 }
@@ -46,22 +96,28 @@ class OtaValidationTest {
    assertTrue(OtaTransferService.running)
    instrumentation.runOnMainSync { assertTrue(runCatching{OtaTransferOwner.submit(context){error("duplicate task ran")}}.isFailure) }
    shell("cmd statusbar expand-notifications")
-   waitFor { shell("uiautomator dump /sdcard/ota-validation-window.xml; cat /sdcard/ota-validation-window.xml").contains("Actualizando la placa") }
+   waitFor { notificationVisible() }
    screenshot("ota-notification.png");shell("cmd statusbar collapse")
    finishGate.complete(Unit)
    waitFor { !OtaTransferService.running };assertEquals(100,ticks.get());assertFalse(OtaTransferOwner.busy.value)
    assertFalse(shell("dumpsys power").contains("DisplayConnect::Ota"))
-  } finally { finishGate.complete(Unit);context.stopService(android.content.Intent(context,OtaTransferService::class.java));shell("input keyevent 224") }
+   record("success-complete ticks=${ticks.get()} busy=${OtaTransferOwner.busy.value}")
+  } catch (failure:Throwable) { failureEvidence("success");throw failure
+  } finally { runCatching { shell("cmd statusbar collapse") };finishGate.complete(Unit);context.stopService(android.content.Intent(context,OtaTransferService::class.java));shell("input keyevent 224") }
  }
  @Test fun blockedNotificationAndSyntheticFailureReleaseOwnership() {
   val context=instrumentation.targetContext;val entered=AtomicInteger()
   try {
-   shell("appops set com.example.displayconnect POST_NOTIFICATION ignore")
-   assertTrue(shell("appops get com.example.displayconnect POST_NOTIFICATION").contains("ignore"))
+   shell("appops get com.example.displayconnect POST_NOTIFICATION")
+   assertEquals(android.content.pm.PackageManager.PERMISSION_DENIED,context.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS))
+   waitFor { !notificationState("blocked-before") }
+   assertFalse("Notifications not blocked before error test",notificationState("blocked-verified"))
    shell("pm grant com.example.displayconnect android.permission.BLUETOOTH_CONNECT")
    activity.scenario.onActivity { OtaTransferOwner.busy.value=true;OtaTransferOwner.submit(it){entered.incrementAndGet();delay(1000);error("synthetic validation failure")} }
    waitFor { entered.get()==1 };waitFor { !OtaTransferService.running }
    assertFalse(OtaTransferOwner.busy.value);assertEquals(-1,OtaTransferOwner.progress.value);assertTrue(OtaTransferOwner.message.value.orEmpty().contains("synthetic validation failure"))
-  } finally { context.stopService(android.content.Intent(context,OtaTransferService::class.java));shell("appops set com.example.displayconnect POST_NOTIFICATION allow") }
+   assertFalse(shell("dumpsys power").contains("DisplayConnect::Ota"));record("blocked-error-complete")
+  } catch (failure:Throwable) { failureEvidence("blocked");throw failure
+  } finally { context.stopService(android.content.Intent(context,OtaTransferService::class.java)) }
  }
 }
