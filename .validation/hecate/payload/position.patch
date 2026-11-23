@@ -1,0 +1,126 @@
+--- a/app/src/main/java/com/example/displayconnect/network/FirmwareChannelPolicy.kt
++++ b/app/src/main/java/com/example/displayconnect/network/FirmwareChannelPolicy.kt
+@@ -1,13 +1,13 @@
+ package com.example.displayconnect.network
+ import org.json.JSONObject
+ 
+-/** Only the diagnostic trial has an approved public distribution endpoint.
++/** Position trial endpoints stay unset until a release is approved.
+  * These are release-metadata URLs, not redirects to a private Drive file.
+  * Stable and trial must remain separate, even when hosted on the same service. */
+ object FirmwareChannelPolicy {
+     const val ORIGINAL = "https://api.github.com/repos/Amesa0036/DisplayConnect/releases/latest"
+     val hecateUseSource: String? = null
+-    val hecateTrialSource: String? = "https://api.github.com/repos/Amesa0036/DisplayConnect/releases/455125788"
++    val hecateTrialSource: String? = null // Position-trial release not approved or published.
+     fun source(model: String?, trial: Boolean): String? = when(model) {
+         HardwareUpdatePolicy.C -> { require(!trial) { "Las pruebas Hecate no admiten la Original" }; ORIGINAL }
+         HardwareUpdatePolicy.G -> if(trial) hecateTrialSource else hecateUseSource
+@@ -18,9 +18,9 @@
+         require(model==HardwareUpdatePolicy.G)
+         require(m.optString("channel")==if(trial) "trial" else "use") { "Canal distinto del solicitado" }
+         require(m.optBoolean("diagnostic",false)==trial && m.has("diagnostic")) { "Tipo de firmware no confirmado" }
+-        if(trial) require(m.optString("trial_kind")=="gnss-close-once-v1") { "Tipo de prueba no admitido por esta app" }
++        if(trial) require(m.optString("trial_kind")=="gnss-position-once-v1" && m.optInt("session_limit_ms")==180000 && m.optBoolean("stationary_only",false)) { "Tipo de prueba no admitido por esta app" }
+         val v=m.getString("version")
+-        if(trial) require(v=="0.28.24-175g-ota1-trial-LOCAL") { "Version de prueba no revisada por esta app" }
++        if(trial) require(v=="0.28.25-175g-ota1-fix-LOCAL") { "Version de prueba no revisada por esta app" }
+         if(!trial) require(listOf("trial","close","LOCAL","rawdiag").none{v.contains(it,true)}) { "Diagnostico bloqueado en canal de uso" }
+         require(m.getString("bin_url").startsWith("https://")) { "Descarga no segura" }
+     }
+--- a/app/src/main/java/com/example/displayconnect/ui/components/RemoteFirmwareConfirmDialog.kt
++++ b/app/src/main/java/com/example/displayconnect/ui/components/RemoteFirmwareConfirmDialog.kt
+@@ -11,7 +11,7 @@
+  AlertDialog(onDismissRequest=onCancel,title={Text(if(diagnostic)"Instalar prueba Hecate" else "Aceptar actualizacion")},
+  text={Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
+   Text("Destino: $boardName\nInstalada: $installed\nOfrecida: $version\nTamano: $size bytes")
+-  if(diagnostic)Text("SOLO DIAGNOSTICO. No sirve para navegar. Para la prueba GPS 0.28.23: equipo en parado, una sola sesion y exportar el registro al terminar. No repetir ni apagar por rutina.")
++  if(diagnostic)Text("SOLO DIAGNOSTICO. No sirve para navegar. Prueba de posicion acotada: equipo en parado, una sola sesion de hasta tres minutos y exportar el registro al terminar. No usar en carretera. No repetir ni apagar por rutina.")
+   else Text("Canal de uso. La version ofrecida puede ser distinta, no necesariamente mas reciente. Compruebala antes de continuar.")
+   Text("La descarga esta comprobada, pero todavia no se ha enviado a la placa. Al aceptar se escribira la particion inactiva y la placa se reiniciara. No la apagues. Reconecta y comprueba la version despues; la transferencia no confirma el arranque.")
+  }},confirmButton={TextButton(onClick=onConfirm){Text(if(diagnostic)"Aceptar y enviar prueba" else "Aceptar y enviar")}},dismissButton={TextButton(onClick=onCancel){Text("Cancelar")}})
+--- a/app/src/main/java/com/example/displayconnect/viewmodel/MainViewModel.kt
++++ b/app/src/main/java/com/example/displayconnect/viewmodel/MainViewModel.kt
+@@ -71,13 +71,21 @@
+             try {
+                 if (navClient.boardInfo.value == null) navClient.boardCommand("board_info").getOrThrow()
+                 if (op == "start") {
+-                    com.example.displayconnect.network.GnssBenchSession(
++                    val trace = app.navigationTrace.newSession()
++                    com.example.displayconnect.network.GnssBenchTrace.run(
++                        trace = trace,
+                         command = { navClient.gnssRawCommand(it) },
+                         monotonic = { android.os.SystemClock.elapsedRealtime() }
+-                    ).run { reply ->
+-                        _gnssDiagnostic.value = com.example.displayconnect.network.GnssDiagnostic.parse(reply, android.os.SystemClock.elapsedRealtime())
++                    ) { reply ->
++                        val received = android.os.SystemClock.elapsedRealtime()
++                        val decoded = com.example.displayconnect.navigation.HecateGnssSource.decodeFix(reply, received, System.currentTimeMillis())
++                        trace.record("gnss_bench_fix_gate", mapOf("accepted" to (decoded != null)))
++                        _gnssDiagnostic.value = com.example.displayconnect.network.GnssPositionPresentation.parse(reply, received)
+                     }
+-                } else _gnssDiagnostic.value = navClient.gnssCommand(op).getOrThrow()
++                } else {
++                    val reply = navClient.gnssRawCommand(op).getOrThrow()
++                    _gnssDiagnostic.value = com.example.displayconnect.network.GnssPositionPresentation.parse(reply, android.os.SystemClock.elapsedRealtime())
++                }
+             } catch (e: kotlinx.coroutines.CancellationException) {
+                 _gnssDiagnostic.value = null
+                 _gnssMessage.value = "Prueba cancelada. Se ha intentado parar; consulta estado para confirmar. No reinicies la prueba."
+--- a/app/src/main/java/com/example/displayconnect/ui/screens/MainScreen.kt
++++ b/app/src/main/java/com/example/displayconnect/ui/screens/MainScreen.kt
+@@ -137,7 +137,7 @@
+                 Card(Modifier.fillMaxWidth()) {
+                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                         Text("GPS propio Hecate · prueba", style = MaterialTheme.typography.titleMedium)
+-                        Text("Prueba de enlace en parado, sin navegación. Consulta automática cada segundo durante un máximo de tres minutos. Mantén esta pantalla abierta. No cambia la fuente elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
++                        Text("Prueba de posicion en parado, sin navegacion. Una sola sesion de hasta tres minutos, con consulta cada segundo. Manten esta pantalla abierta y el movil despierto. Al terminar, guarda el registro en Placa y datos > Capturas y diagnostico. No cambia la fuente elegida en Ajustes.", style = MaterialTheme.typography.bodySmall)
+                         Text(if (!isConnected) "Placa desconectada. Sin lectura actual." else gnss?.display(gnssNow) ?: gnssMessage, style = MaterialTheme.typography.bodySmall)
+                         FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                             Button(onClick = { viewModel.gnssCommand("start") }, enabled = isConnected && !boardBusy && !gnssBusy && !uiState.isNavigating && (boardInfo == null || boardInfo?.hardwareModel == "waveshare_s3_175g")) { Text("Iniciar prueba GPS") }
+--- /dev/null
++++ b/app/src/main/java/com/example/displayconnect/network/GnssBenchTrace.kt
+@@ -0,0 +1,27 @@
++package com.example.displayconnect.network
++
++import com.example.displayconnect.navigation.NavigationTraceSink
++import org.json.JSONObject
++import kotlinx.coroutines.delay
++
++/** Capture the bench session through the same bounded local export used by navigation. */
++internal object GnssBenchTrace {
++    suspend fun run(trace: NavigationTraceSink,
++        command: suspend (String) -> Result<JSONObject>,
++        monotonic: () -> Long,
++        pause: suspend (Long) -> Unit = { delay(it) },
++        publish: (JSONObject) -> Unit) {
++        trace.record("session_start", mapOf("source" to "hecate", "purpose" to "stationary_position_bench"))
++        try {
++            GnssBenchSession(command = { op ->
++                val result = try { command(op) } catch (e: Exception) {
++                    trace.record("gnss_bench_transport_failure", mapOf("command" to op, "error_class" to e.javaClass.simpleName))
++                    throw e
++                }
++                result.getOrNull()?.let { trace.record("gnss_reply", mapOf("command" to op, "reply" to it.toString())) }
++                if (result.isFailure) trace.record("gnss_bench_transport_failure", mapOf("command" to op))
++                result
++            }, monotonic = monotonic, pause = pause).run(publish)
++        } finally { trace.record("session_end", mapOf("purpose" to "stationary_position_bench")) }
++    }
++}
+--- /dev/null
++++ b/app/src/main/java/com/example/displayconnect/network/GnssPositionPresentation.kt
+@@ -0,0 +1,13 @@
++package com.example.displayconnect.network
++
++import org.json.JSONObject
++import com.example.displayconnect.navigation.HecateGnssSource
++
++/** Use the existing navigation position gate even for a standalone status query. */
++internal object GnssPositionPresentation {
++    fun parse(reply: JSONObject, received: Long, wall: Long = System.currentTimeMillis()): GnssDiagnostic {
++        val presented = JSONObject(reply.toString())
++        if (HecateGnssSource.decodeFix(reply, received, wall) == null) presented.put("valid_fix", false)
++        return GnssDiagnostic.parse(presented, received)
++    }
++}
