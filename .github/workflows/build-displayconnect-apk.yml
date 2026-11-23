@@ -22,7 +22,7 @@ jobs:
           test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | wc -l)" = 8
           test "$(git diff --name-only 85a63d3aa61c3411d5663bb1e4ca679310949aca HEAD | grep -vE '^([.]validation/hecate/|[.]github/workflows/build-displayconnect-apk[.]yml$)' | wc -l)" = 0
           sha256sum -c <<'APPROVED_HASHES'
-          42eebf017c31e0eaf4d7517c49ad6b207eab0b15c0364f5f76ec73f371fd52ea  .validation/hecate/run.sh
+          2378e8e364eafe9a0981ca3ad3cb620012fdd178c76d7fb09036652271f6be6c  .validation/hecate/run.sh
           99572298864c3215ac93ca4a2015024a4a63ee4f6cab54111cad4ad3f868a726  .validation/hecate/payload/position.patch
           04e45734f85895a6ed6f7c9e7b112325205edd62481b361649bb3cbb4af5c5c1  .validation/hecate/payload/ota.patch
           87b549fa1a6c322cd3ffb4dbc851ba2a718cfbe31d845ec7d8141e8c5133ff66  .validation/hecate/overlay/app/src/androidTest/java/com/example/displayconnect/PositionValidationTest.kt
