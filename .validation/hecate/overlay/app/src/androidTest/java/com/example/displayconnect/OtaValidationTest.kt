@@ -50,6 +50,16 @@ class OtaValidationTest {
   record("$label notificationsEnabled=$enabled appOpMode=$op running=${OtaTransferService.running} busy=${OtaTransferOwner.busy.value}")
   return enabled
  }
+private fun otaLockActive(dump:String):Boolean {
+ val lines=dump.lines()
+ val starts=lines.indices.filter { Regex("Wake Locks: size=\\d+").matches(lines[it]) }
+ val ends=lines.indices.filter { Regex("Suspend Blockers: size=\\d+").matches(lines[it]) }
+ check(starts.size==1&&ends.size==1&&starts.single()<ends.single()) { "Missing/ambiguous current wake-lock section" }
+ val rows=lines.subList(starts.single()+1,ends.single()).filter { it.isNotBlank() }
+ check(rows.size==lines[starts.single()].substringAfter("=").toInt()) { "Wake-lock count does not match rows" }
+ val tags=rows.map { row -> requireNotNull(Regex("  [A-Z_]+ +'(.*)'(?: .*)?").matchEntire(row)) { "Unknown current wake-lock row" }.groupValues[1] }
+ return "DisplayConnect::Ota" in tags
+}
  private fun notificationVisible():Boolean {
   val automation=instrumentation.uiAutomation
   val info=automation.serviceInfo
@@ -100,7 +110,7 @@ class OtaValidationTest {
    screenshot("ota-notification.png");shell("cmd statusbar collapse")
    finishGate.complete(Unit)
    waitFor { !OtaTransferService.running };assertEquals(100,ticks.get());assertFalse(OtaTransferOwner.busy.value)
-   assertFalse(shell("dumpsys power").contains("DisplayConnect::Ota"))
+   assertFalse("OTA wake lock still active",otaLockActive(shell("dumpsys power")))
    record("success-complete ticks=${ticks.get()} busy=${OtaTransferOwner.busy.value}")
   } catch (failure:Throwable) { failureEvidence("success");throw failure
   } finally { runCatching { shell("cmd statusbar collapse") };finishGate.complete(Unit);context.stopService(android.content.Intent(context,OtaTransferService::class.java));shell("input keyevent 224") }
@@ -116,7 +126,9 @@ class OtaValidationTest {
    activity.scenario.onActivity { OtaTransferOwner.busy.value=true;OtaTransferOwner.submit(it){entered.incrementAndGet();delay(1000);error("synthetic validation failure")} }
    waitFor { entered.get()==1 };waitFor { !OtaTransferService.running }
    assertFalse(OtaTransferOwner.busy.value);assertEquals(-1,OtaTransferOwner.progress.value);assertTrue(OtaTransferOwner.message.value.orEmpty().contains("synthetic validation failure"))
-   assertFalse(shell("dumpsys power").contains("DisplayConnect::Ota"));record("blocked-error-complete")
+   assertFalse("OTA wake lock still active",otaLockActive(shell("dumpsys power")))
+   assertFalse("Notifications unexpectedly enabled after blocked task",notificationState("blocked-after"))
+   screenshot("ota-blocked-complete.png");record("blocked-error-complete")
   } catch (failure:Throwable) { failureEvidence("blocked");throw failure
   } finally { context.stopService(android.content.Intent(context,OtaTransferService::class.java)) }
  }
