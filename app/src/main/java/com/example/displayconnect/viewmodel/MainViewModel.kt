@@ -336,12 +336,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _gnssProbeMessage.value = null
             if (navClient.boardInfo.value == null) navClient.boardCommand("board_info")
             val reply = navClient.gnssRawCommand("status").getOrNull()
-            if (reply != null && reply.optBoolean("ok", false) && reply.optBoolean("supported", false) && reply.optBoolean("reader", false)) {
+            if (reply != null && com.example.displayconnect.navigation.HecateNavigationPolicy.supported(reply)) {
                 onAvailable()
             } else {
                 _gnssProbeMessage.value = when (com.example.displayconnect.utils.AppLanguage.language.value) {
                     "en" -> "This board does not offer its own GPS (firmware without gnss_diag or board not connected)."
-                    "es" -> "Esta placa no ofrece GPS propio para navegar (falta firmware con lectura completa o placa no conectada)."
+                    "es" -> "GPS propio no disponible para navegar: placa desconectada, firmware de diagnostico o lectura no compatible."
                     else -> "Esta placa nao oferece GPS proprio (firmware sem gnss_diag ou placa nao conectada)."
                 }
             }
