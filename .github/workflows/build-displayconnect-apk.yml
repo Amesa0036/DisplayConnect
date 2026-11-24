@@ -30,6 +30,8 @@ jobs:
         with:
           packages: ''
       - run: sdkmanager 'platforms;android-36.1' 'platform-tools' 'cmdline-tools;latest'
+      - name: Prepare render output directory
+        run: sudo mkdir -p /downloads && sudo chmod 777 /downloads
       - name: Restore exact reviewed sources and test fixtures
         shell: python
         run: |
