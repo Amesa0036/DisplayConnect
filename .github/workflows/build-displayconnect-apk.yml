@@ -1,4 +1,4 @@
-name: Generate touch recovery app32 only
+name: Generate touch recovery app33 only
 on:
   workflow_dispatch:
 permissions:
@@ -32,7 +32,7 @@ jobs:
         run: |
           from pathlib import Path
           import base64,gzip,json,shutil,hashlib
-          files=json.loads(gzip.decompress(Path('control/3-touch-recovery-inputs.json.gz').read_bytes()))
+          files=json.loads(gzip.decompress(Path('control/4-touch-recovery2-inputs.json.gz').read_bytes()))
           for path,value in files.items():
            if path.startswith('__fixtures/'): out=Path('fixtures')/path.removeprefix('__fixtures/')
            elif path.startswith('__ci/'): out=Path('control/ci')/path.removeprefix('__ci/')
@@ -65,7 +65,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hecate-touch-recovery-app32
+          name: hecate-touch-recovery-app33
           path: verified-pair/
           if-no-files-found: error
           retention-days: 7
