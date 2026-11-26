@@ -34,7 +34,7 @@ jobs:
           import base64,gzip,json,shutil,hashlib
           files=json.loads(gzip.decompress(Path('control/4-touch-recovery2-inputs.json.gz').read_bytes()))
           ov=sorted(Path('control').glob('*overlay-app34.json'));assert len(ov)==1,ov
-          over=json.loads(ov[0].read_text());assert set(over)<=set(files) and len(over)==3,sorted(over)
+          over=json.loads(ov[0].read_text());newt='app/src/test/java/com/example/displayconnect/network/NewV3PolicyTest.kt';assert set(over)-set(files)<={newt} and len(over)==4 and newt in over,sorted(over)
           files.update(over)
           for path,value in files.items():
            if path.startswith('__fixtures/'): out=Path('fixtures')/path.removeprefix('__fixtures/')
