@@ -1,0 +1,74 @@
+name: Generate new v3 app34 only
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 23275abcdffee840c1f23d008963fb67e650089d
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
+      - run: sdkmanager 'platforms;android-36.1' 'platform-tools' 'cmdline-tools;latest'
+      - name: Prepare render output directory
+        run: sudo mkdir -p /downloads && sudo chmod 777 /downloads
+      - name: Restore exact reviewed sources and test fixtures
+        shell: python
+        run: |
+          from pathlib import Path
+          import base64,gzip,json,shutil,hashlib
+          files=json.loads(gzip.decompress(Path('control/4-touch-recovery2-inputs.json.gz').read_bytes()))
+          ov=sorted(Path('control').glob('*overlay-app34.json'));assert len(ov)==1,ov
+          over=json.loads(ov[0].read_text());assert set(over)<=set(files) and len(over)==3,sorted(over)
+          files.update(over)
+          for path,value in files.items():
+           if path.startswith('__fixtures/'): out=Path('fixtures')/path.removeprefix('__fixtures/')
+           elif path.startswith('__ci/'): out=Path('control/ci')/path.removeprefix('__ci/')
+           else: out=Path('candidate')/path
+           out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(base64.b64decode(value))
+          Path('/downloads').mkdir(exist_ok=True)
+          assert hashlib.sha256(Path('fixtures/touch-signed.bin').read_bytes()).hexdigest()=='c09e62756318d7db3c402a9966b49efb137f4261bb06aa0e8e089c02b03fbe1a'
+          assert hashlib.sha256(Path('fixtures/pmu-return.bin').read_bytes()).hexdigest()=='19e69b42ae969f3e4e9f981de173ddd4dd62f2c2e8eaf59ad475c3edd7069086'
+          assert not Path('candidate/app/src/debug').exists()
+          Path('control/ci/source-hashes.json').write_text(json.dumps({p:hashlib.sha256(base64.b64decode(v)).hexdigest()for p,v in files.items()},indent=2))
+      - name: Test and build sequentially without installation
+        env:
+          TOUCH_PAYLOAD: ${{ github.workspace }}/fixtures/touch-unsigned.bin
+          TOUCH_SIGNED: ${{ github.workspace }}/fixtures/touch-signed.bin
+          PMU_RECOVERY: ${{ github.workspace }}/fixtures/pmu-return.bin
+          HUD_PAYLOAD: ${{ github.workspace }}/fixtures/hud-payload.bin
+        run: |
+          set -euo pipefail
+          for kind in candidate; do
+            (cd "$kind" && chmod +x gradlew && ./gradlew --no-daemon --no-configuration-cache --max-workers=1 :app:testDebugUnitTest :app:assembleDebug) > "$RUNNER_TEMP/$kind-build.txt" 2>&1 || { tail -n 100 "$RUNNER_TEMP/$kind-build.txt"; exit 1; }
+            tail -n 8 "$RUNNER_TEMP/$kind-build.txt"
+          done
+      - name: Sign and verify APK with fixed existing key
+        env:
+          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
+        run: bash control/ci/sign.sh
+      - name: Stage audit hashes
+        run: |
+          cp control/ci/source-hashes.json verified-pair/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hecate-new-v3-app34
+          path: verified-pair/
+          if-no-files-found: error
+          retention-days: 1
