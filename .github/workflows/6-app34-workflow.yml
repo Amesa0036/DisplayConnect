@@ -16,7 +16,7 @@ jobs:
         run: |
           test "$(git -C control rev-parse HEAD)" = "$GITHUB_SHA"
           test -f control/4-touch-recovery2-inputs.json.gz
-          ls control/*overlay-app36.json
+          ls control/*overlay-app37.json
       - uses: actions/checkout@v4
         with:
           ref: 23275abcdffee840c1f23d008963fb67e650089d
@@ -38,8 +38,8 @@ jobs:
           from pathlib import Path
           import base64,gzip,json,shutil,hashlib
           files=json.loads(gzip.decompress(Path('control/4-touch-recovery2-inputs.json.gz').read_bytes()))
-          ov=sorted(Path('control').glob('*overlay-app36.json'));assert len(ov)==1,ov
-          over=json.loads(ov[0].read_text());newt='app/src/test/java/com/example/displayconnect/network/NewV3PolicyTest.kt';newt2='app/src/test/java/com/example/displayconnect/network/OtaTrialLogTest.kt';assert set(over)-set(files)<={newt,newt2} and len(over)==9 and newt in over and newt2 in over,sorted(over)
+          ov=sorted(Path('control').glob('*overlay-app37.json'));assert len(ov)==1,ov
+          over=json.loads(ov[0].read_text());newt='app/src/test/java/com/example/displayconnect/network/NewV3PolicyTest.kt';newt2='app/src/test/java/com/example/displayconnect/network/OtaTrialLogTest.kt';n3='app/src/main/java/com/example/displayconnect/network/PostUsbBootConfirmation.kt';n4='app/src/test/java/com/example/displayconnect/network/NewV32PolicyTest.kt';n5='app/src/test/java/com/example/displayconnect/network/PostUsbBootConfirmationTest.kt';assert set(over)-set(files)<={newt,newt2,n3,n4,n5} and len(over)==12 and {newt,newt2,n3,n4,n5}<=set(over),sorted(over)
           files.update(over)
           for path,value in files.items():
            if path.startswith('__fixtures/'): out=Path('fixtures')/path.removeprefix('__fixtures/')
@@ -73,7 +73,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: hecate-new-v3-app36
+          name: hecate-new-v3-app37
           path: verified-pair/
           if-no-files-found: error
           retention-days: 1
