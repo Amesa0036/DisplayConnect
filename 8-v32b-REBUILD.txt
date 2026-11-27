@@ -1,0 +1,7 @@
+Rebuild of Hecate NEW v3.2b from GitHub text files only (plus upstream SDK files checked by hash):
+1) base64 -d 8-v32b-sources.tgz.b64.txt | tar xz   (main/, CMakeLists.txt, sdkconfig.ci)
+2) base64 -d 8-v32b-build-inputs.tgz.b64.txt | tar xz  (cmake/, partitions*.csv, dependencies*.lock, hecate-expected.lock, hecate.constraints, sdkconfig.defaults, sdkconfig.ota-int, version.txt, fw-ci-pinned-build.py, devices/, tools/, build-v32.sh)
+3) components/, avatar/, tests/, simulator/ come from the Muse gadget SDK (github.com/facebookincubator/muse-gadget-sdk, local base commit b139b45 per user notes); verify every file against 8-v32b-external-files.sha256.txt (sha256sum -c). A private Drive copy of the full tree exists: sdk-cont-v32b-FULL-tree-no-build.tgz.
+4) managed_components/ is restored by idf.py from dependencies.lock and hecate.constraints (IDF v6.0.1); then run build-v32.sh (idf.py -B build-v32 -DSDKCONFIG=sdkconfig.ci). Expected unsigned image: sha256 f6c32ac8ec54196ca9dd474a84e7a62e52627e07056bae01b1b67033aba8aac1 (1114112 B), bootloader cde829b3..., partition table ffa95286...
+ffaf4558a7050429302e727fb4f137eb88b6eb1844f19de37465d5cb2eaf1d61  build-inputs.tgz
+e569c405017fc57aa9c906c0aeb5e2dc7d80a5388253add3e2869b9bba2ed746  sdk-cont-v32b-FULL-tree-no-build.tgz
