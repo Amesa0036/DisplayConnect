@@ -51,6 +51,45 @@ jobs:
           assert hashlib.sha256(Path('fixtures/pmu-return.bin').read_bytes()).hexdigest()=='19e69b42ae969f3e4e9f981de173ddd4dd62f2c2e8eaf59ad475c3edd7069086'
           assert not Path('candidate/app/src/debug').exists()
           Path('control/ci/source-hashes.json').write_text(json.dumps({p:hashlib.sha256(base64.b64decode(v)).hexdigest()for p,v in files.items()},indent=2))
+      - name: Prefetch official Robolectric runtime with pinned SHA-256
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/prefetch"
+          cat > "$RUNNER_TEMP/prefetch.sh" <<'PREFETCH_EOF'
+          # Prefetch ONE official Maven Central artifact (Robolectric native runtime, ~165 MB) with pinned SHA-256,
+          # so Gradle does not have to download it from Central when Central throttles (HTTP 429).
+          # Source order: Maven Central, then Google's Maven Central mirror. The pinned hash makes the source irrelevant.
+          set -euo pipefail
+          OUT="${1:?output dir}"; GH="${2:?gradle user home}"
+          G=org/robolectric/nativeruntime-dist-compat/1.0.20; B=nativeruntime-dist-compat-1.0.20
+          JAR_SHA=f25c88ce3a02c5f88cf2fb474c2e9c220ec5fa7ba3ac3deeef3d6d26d7861385
+          POM_SHA=6ed047e73f94de759b41f00a731f3f21a627881561262f74110a59273b238362
+          mkdir -p "$OUT/$G" "$GH/init.d"
+          fetch() { # name sha
+            for base in "${CENTRAL_BASE:-https://repo.maven.apache.org/maven2}" "${MIRROR_BASE:-https://maven-central.storage-download.googleapis.com/maven2}"; do
+              for n in 1 2 3; do
+                if curl -fsS --retry 3 --retry-all-errors --retry-delay 20 -o "$OUT/$G/$1.part" "$base/$G/$1" \
+                   && [ "$(sha256sum "$OUT/$G/$1.part" | cut -d' ' -f1)" = "$2" ]; then mv "$OUT/$G/$1.part" "$OUT/$G/$1"; echo "ok $1 from $base"; return 0; fi
+                rm -f "$OUT/$G/$1.part"; sleep $((n*30))
+              done
+            done
+            echo "could not fetch $1 with the pinned hash" >&2; return 1
+          }
+          fetch $B.pom $POM_SHA
+          fetch $B.jar $JAR_SHA
+          cat > "$GH/init.d/prefetched.init.gradle.kts" <<'KTS'
+          // Consulted first, for this one module only; everything else still comes from the repositories in settings.gradle.kts.
+          beforeSettings {
+              dependencyResolutionManagement.repositories.maven {
+                  name = "prefetchedCentral"
+                  url = uri(System.getenv("PREFETCH_REPO") ?: "file:///nonexistent")
+                  content { includeModule("org.robolectric", "nativeruntime-dist-compat") }
+              }
+          }
+          KTS
+          PREFETCH_EOF
+          bash "$RUNNER_TEMP/prefetch.sh" "$RUNNER_TEMP/prefetch/repo" "$HOME/.gradle"
+          echo "PREFETCH_REPO=file://$RUNNER_TEMP/prefetch/repo" >> "$GITHUB_ENV"
       - name: Test and build sequentially without installation
         env:
           TOUCH_PAYLOAD: ${{ github.workspace }}/fixtures/touch-unsigned.bin
